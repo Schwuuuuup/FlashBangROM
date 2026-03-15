@@ -85,6 +85,8 @@ Progress log:
 - 2026-03-15: Resolved non-fast-forward push by replacing remote `main` with local history as requested (`--force-with-lease`), then pushed tag `v0.1.0`.
 - 2026-03-15: Local `main` now tracks `origin/main`; CI/release workflows are now active on GitHub.
 - 2026-03-15: Cleaned up obsolete remote branch `copilot/extend-flashbang-system-features`; only `origin/main` remains.
+- 2026-03-15: First release workflow run from tag `v0.1.1` failed in `Test Host` on GitHub Actions.
+- 2026-03-15: Hardened CI/release host test environment by installing Linux build deps (`pkg-config`, `libudev-dev`) and enforcing `cargo test --locked` in both `host-ci` and `release` workflows.
 
 ## M2 - Firmware Command Engine (SST39)
 Status: In Progress
@@ -139,4 +141,4 @@ Deliverables:
 5. Add detailed BluePill hardware modification steps with photo placeholders and checklist.
 6. **GUI demo available now**: `cargo run` (or `cargo run -- --gui`) launches a native desktop preview without hardware.
 7. Optional fallback demo: `cargo run -- --demo` launches the terminal UI preview.
-8. Confirm first GitHub release generation from tag `v0.1.0` and review workflow artifacts.
+8. Create a follow-up release tag after CI fix and confirm GitHub release generation plus attached firmware artifact.
