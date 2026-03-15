@@ -34,6 +34,7 @@ FlashBang is a modular ROM flashing system for parallel NOR chips.
 - Architecture: `docs/ARCHITECTURE.md`
 - Protocol spec: `protocol/flashbang-link-protocol.md`
 - Hardware mods: `hardware/mods/README.md`
+- Release workflow: `docs/RELEASE_WORKFLOW.md`
 
 ## Versioning
 - Firmware and host derive build metadata automatically from Git.

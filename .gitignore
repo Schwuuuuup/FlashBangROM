@@ -23,6 +23,10 @@ firmware/*.bin
 firmware/*.elf
 firmware/include/generated_build_info.h
 
+# Host generated reports
+host/studio/flashbang-verify-report.txt
+host/studio/flashbang-verify-report.json
+
 # Python
 __pycache__/
 *.pyc

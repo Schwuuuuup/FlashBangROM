@@ -1,0 +1,46 @@
+name: release
+
+on:
+  push:
+    tags:
+    - "v*"
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.x"
+
+    - name: Install PlatformIO
+      run: pip install platformio
+
+    - name: Build Firmware
+      working-directory: firmware
+      run: pio run
+
+    - name: Upload Firmware Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: firmware-bin-${{ github.ref_name }}
+        path: firmware/.pio/build/genericSTM32F103C8/firmware.bin
+
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Test Host
+      working-directory: host/studio
+      run: cargo test --all-targets
+
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v2
+      with:
+        files: firmware/.pio/build/genericSTM32F103C8/firmware.bin
+        generate_release_notes: true

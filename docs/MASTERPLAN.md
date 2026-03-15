@@ -74,6 +74,13 @@ Progress log:
 	- Version format: `<latest-tag>+build.<commit-count>.<short-sha>` with optional `.dirty` suffix.
 - 2026-03-15: Current repository state has no first commit yet; fallback build identifier is `0.0.0+build.0.nogit` until the initial commit exists.
 - 2026-03-15: Validation after versioning integration: `cargo test` passed (8/8), `pio run` passed.
+- 2026-03-15: Created initial repository commit (`4aa4a355`) and first semantic tag `v0.1.0`.
+- 2026-03-15: Automatic versioning is now active from real history: firmware/host both report `0.1.0+build.1.4aa4a355` (clean tree).
+- 2026-03-15: Post-tag validation passed: `pio run` success, `cargo test` success (8/8), host CLI prints dynamic version text.
+- 2026-03-15: Added formal release process documentation (`docs/RELEASE_WORKFLOW.md`) and linked it from README.
+- 2026-03-15: Added GitHub tag-release workflow (`.github/workflows/release.yml`) to build firmware, run host tests, upload firmware artifact, and create GitHub release notes on `v*` tags.
+- 2026-03-15: Added ignore rules for generated host verify report files to keep working tree clean during normal usage.
+- 2026-03-15: Validation after release-workflow prep: `cargo test` passed (8/8), `pio run` passed.
 
 ## M2 - Firmware Command Engine (SST39)
 Status: In Progress
@@ -128,4 +135,4 @@ Deliverables:
 5. Add detailed BluePill hardware modification steps with photo placeholders and checklist.
 6. **GUI demo available now**: `cargo run` (or `cargo run -- --gui`) launches a native desktop preview without hardware.
 7. Optional fallback demo: `cargo run -- --demo` launches the terminal UI preview.
-8. Create the initial Git commit and first semantic tag (recommended: `v0.1.0`) so automatic build numbering starts from real repository history.
+8. Configure GitHub remote (`origin`) and push `main` + tags to activate CI/release workflows remotely.
