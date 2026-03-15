@@ -25,34 +25,70 @@ bool parseDec32(const String& text, uint32_t& out) {
 }
 
 bool parseLine(const String& line, CommandContext& ctx) {
-  if (line == "?") {
+  String normalized = line;
+  normalized.trim();
+  normalized.toUpperCase();
+
+  if (normalized.length() == 0) {
+    return false;
+  }
+
+  if (normalized == "?") {
     ctx.cmd = CommandType::Help;
     return true;
   }
-  if (line == "ID") {
+  if (normalized == "HELLO" || normalized.startsWith("HELLO|")) {
+    ctx.cmd = CommandType::Hello;
+    return true;
+  }
+  if (normalized == "ID") {
     ctx.cmd = CommandType::Id;
     return true;
   }
-  if (line == "CHIP_ERASE") {
+  if (normalized == "CHIP_ERASE") {
     ctx.cmd = CommandType::ChipErase;
     return true;
   }
+  if (normalized == "DATA_BUS_MONITOR_START") {
+    ctx.cmd = CommandType::DataBusMonitorStart;
+    return true;
+  }
+  if (normalized == "DATA_BUS_MONITOR_STOP") {
+    ctx.cmd = CommandType::DataBusMonitorStop;
+    return true;
+  }
 
-  int p1 = line.indexOf('|');
+  if (normalized.startsWith("SET_A")) {
+    if (normalized.length() != 10) {
+      return false;
+    }
+    uint32_t addr = 0;
+    if (!parseHex32(normalized.substring(5), addr)) {
+      return false;
+    }
+    if (addr > 0x7FFFFUL) {
+      return false;
+    }
+    ctx.addr = addr;
+    ctx.cmd = CommandType::SetAddress;
+    return true;
+  }
+
+  int p1 = normalized.indexOf('|');
   if (p1 < 0) {
     return false;
   }
-  String op = line.substring(0, p1);
+  String op = normalized.substring(0, p1);
 
   if (op == "READ") {
-    int p2 = line.indexOf('|', p1 + 1);
+    int p2 = normalized.indexOf('|', p1 + 1);
     if (p2 < 0) {
       return false;
     }
-    if (!parseHex32(line.substring(p1 + 1, p2), ctx.addr)) {
+    if (!parseHex32(normalized.substring(p1 + 1, p2), ctx.addr)) {
       return false;
     }
-    if (!parseDec32(line.substring(p2 + 1), ctx.len)) {
+    if (!parseDec32(normalized.substring(p2 + 1), ctx.len)) {
       return false;
     }
     ctx.cmd = CommandType::Read;
@@ -60,15 +96,15 @@ bool parseLine(const String& line, CommandContext& ctx) {
   }
 
   if (op == "PROGRAM_BYTE") {
-    int p2 = line.indexOf('|', p1 + 1);
+    int p2 = normalized.indexOf('|', p1 + 1);
     uint32_t value = 0;
     if (p2 < 0) {
       return false;
     }
-    if (!parseHex32(line.substring(p1 + 1, p2), ctx.addr)) {
+    if (!parseHex32(normalized.substring(p1 + 1, p2), ctx.addr)) {
       return false;
     }
-    if (!parseHex32(line.substring(p2 + 1), value)) {
+    if (!parseHex32(normalized.substring(p2 + 1), value)) {
       return false;
     }
     ctx.value = static_cast<uint8_t>(value & 0xFF);
@@ -77,7 +113,7 @@ bool parseLine(const String& line, CommandContext& ctx) {
   }
 
   if (op == "SECTOR_ERASE") {
-    if (!parseHex32(line.substring(p1 + 1), ctx.addr)) {
+    if (!parseHex32(normalized.substring(p1 + 1), ctx.addr)) {
       return false;
     }
     ctx.cmd = CommandType::SectorErase;
@@ -85,23 +121,38 @@ bool parseLine(const String& line, CommandContext& ctx) {
   }
 
   if (op == "WRITE_STATUS") {
-    int p2 = line.indexOf('|', p1 + 1);
-    int p3 = line.indexOf('|', p2 + 1);
+    int p2 = normalized.indexOf('|', p1 + 1);
+    int p3 = normalized.indexOf('|', p2 + 1);
     uint32_t expected = 0;
     if (p2 < 0 || p3 < 0) {
       return false;
     }
-    if (!parseHex32(line.substring(p1 + 1, p2), ctx.addr)) {
+    if (!parseHex32(normalized.substring(p1 + 1, p2), ctx.addr)) {
       return false;
     }
-    if (!parseHex32(line.substring(p2 + 1, p3), expected)) {
+    if (!parseHex32(normalized.substring(p2 + 1, p3), expected)) {
       return false;
     }
-    if (!parseDec32(line.substring(p3 + 1), ctx.timeoutMs)) {
+    if (!parseDec32(normalized.substring(p3 + 1), ctx.timeoutMs)) {
       return false;
     }
     ctx.value = static_cast<uint8_t>(expected & 0xFF);
     ctx.cmd = CommandType::WriteStatus;
+    return true;
+  }
+
+  if (op == "ADDR_BUS_TEST") {
+    String bank = normalized.substring(p1 + 1);
+    if (bank == "A0_7" || bank == "LOW8") {
+      ctx.bank = 0;
+    } else if (bank == "A8_15" || bank == "HIGH8") {
+      ctx.bank = 1;
+    } else if (bank == "A16_18" || bank == "HIGH3") {
+      ctx.bank = 2;
+    } else {
+      return false;
+    }
+    ctx.cmd = CommandType::AddrBusTest;
     return true;
   }
 

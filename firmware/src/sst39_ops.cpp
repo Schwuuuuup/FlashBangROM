@@ -28,7 +28,10 @@ void sst39IdEntry() {
 }
 
 void sst39IdExit() {
-  writeCycle(0x0000, 0xF0);
+  // Exit ID mode with explicit unlock + reset sequence.
+  writeCycle(0x5555, 0xAA);
+  writeCycle(0x2AAA, 0x55);
+  writeCycle(0x5555, 0xF0);
   delayMicroseconds(WAIT_ID_MODE_US);
 }
 

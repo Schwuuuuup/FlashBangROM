@@ -5,3 +5,5 @@
 void sendOk(const char* cmd, const String& detail);
 void sendErr(const char* code, const char* message);
 void sendDataFrameHex(uint32_t addr, const uint8_t* data, uint32_t len);
+void sendStatus(const char* operation, const char* phase, uint32_t progress,
+				const String& detail);

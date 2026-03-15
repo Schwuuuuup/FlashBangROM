@@ -43,3 +43,15 @@ void sendDataFrameHex(uint32_t addr, const uint8_t* data, uint32_t len) {
   Serial.print(header);
   Serial.println(payload);
 }
+
+void sendStatus(const char* operation, const char* phase, uint32_t progress,
+                const String& detail) {
+  Serial.print("STATUS|");
+  Serial.print(operation);
+  Serial.print("|");
+  Serial.print(phase);
+  Serial.print("|");
+  Serial.print(progress);
+  Serial.print("|");
+  Serial.println(detail);
+}

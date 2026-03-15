@@ -30,3 +30,6 @@ host/studio/flashbang-verify-report.json
 # Python
 __pycache__/
 *.pyc
+
+#Test-Data
+captures/

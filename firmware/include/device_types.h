@@ -13,12 +13,17 @@ enum class DeviceState {
 enum class CommandType {
   None,
   Help,
+  Hello,
   Id,
   Read,
   ProgramByte,
   SectorErase,
   ChipErase,
   WriteStatus,
+  DataBusMonitorStart,
+  DataBusMonitorStop,
+  SetAddress,
+  AddrBusTest,
 };
 
 struct CommandContext {
@@ -27,6 +32,7 @@ struct CommandContext {
   uint32_t len = 0;
   uint8_t value = 0;
   uint32_t timeoutMs = 0;
+  uint8_t bank = 0;
 };
 
 struct Sst39ChipInfo {
@@ -34,4 +40,12 @@ struct Sst39ChipInfo {
   uint8_t device = 0x00;
   uint32_t sizeBytes = 0;
   const char* name = "unknown";
+};
+
+struct ChipInfo {
+  uint8_t manufacturer = 0x00;
+  uint8_t device = 0x00;
+  uint32_t sizeBytes = 0;
+  const char* name = "unknown";
+  const char* driverId = "unknown";
 };

@@ -38,6 +38,7 @@ This file is the single source of truth for long-term project direction, durable
 ## Nice-To-Haves
 - Keep host-side UI and protocol work testable without requiring permanent hardware access.
 - Support visual diffing of readback data against expected values in the host app.
+- Status-Visualisation via built-in LED
 
 ## Non-Goals
 - Support additional Microcontrollers that require additional Hardware to get to the 30 GPIOs needed for the target bus and control lines.
@@ -181,6 +182,7 @@ This file is the single source of truth for long-term project direction, durable
 - PlatformIO + Arduino remains the firmware build stack until there is a concrete reason to migrate.
 - GitHub release publishing is desired and should stay tag-driven.
 - GUI work is allowed to progress in mock/demo mode before full hardware integration is finished.
+- Chip descriptors in `drivers/` are the canonical registry for supported IDs/capabilities, while firmware currently uses compile-time probe routines; runtime YAML parsing on MCU is not part of the current baseline.
 
 ## Insights For Future Sessions
 - Early GUI and protocol work did not need permanent hardware access; the mock-device path was useful and should be preserved.
@@ -194,6 +196,9 @@ This file is the single source of truth for long-term project direction, durable
 - GitHub release automation required explicit workflow token permissions (`contents: write`) in addition to a working build/test pipeline.
 - Git-derived version metadata is useful and should stay, but it requires full tag/history availability in CI.
 - Hardware timing assumptions are still provisional until confirmed on real boards with measurement tools.
+- ROM-less bench testing can produce false-positive `OK` results for SST39 write/erase/status operations (floating bus/no-chip conditions); firmware requires explicit chip-presence/plausibility checks before trusting completion polling.
+- Address-line float regressions are a known high-impact failure mode: do not rely on numeric `for (pin = X; pin <= Y; ++pin)` initialization for bus-critical GPIO configuration. Address and data bus pins must be initialized via explicit pin lists, and address pins must be re-asserted as `OUTPUT` before driving a new address value.
+- Before any SST39 ID/read/program investigation, run an address-bus sanity check (`ADDR_BUS_TEST|A0_7`, then `A8_15`, then `A16_18`) to prove deterministic toggling and avoid misdiagnosing wiring/init faults as chip-protocol failures.
 
 ## Constraints And Environment
 - Hardware constraints:
@@ -204,8 +209,11 @@ This file is the single source of truth for long-term project direction, durable
 	- Host build baseline should remain compatible with Rust/Cargo `1.75` unless deliberately upgraded.
 	- Linux CI for the Rust host requires serial-stack build dependencies.
 	- Firmware and host version strings are derived from Git tags/history.
+	- BluePill firmware flashing baseline uses `PlatformIO` with `upload_protocol = hid`; the concrete `/dev/ttyACM*` device name may change between flashes and must be treated as runtime-discovered, not fixed.
 - Quality constraints:
 	- Datasheet timing and command assumptions must remain encoded, not left implicit.
 	- Protocol changes must not silently break compatibility between host and firmware.
+	- Mutating SST39 operations (`PROGRAM_BYTE`, `WRITE_STATUS`, `SECTOR_ERASE`, `CHIP_ERASE`) must fail fast with `E_HW` when no supported SST39 ID is detected, to avoid false-positive success on floating/no-chip buses.
 	- Real hardware validation is still required before trusting timing-sensitive behavior.
+	- Address bus must never be left in high-impedance state during normal operation; firmware must actively drive all configured address pins (`A0..A18`) and treat any floating behavior as a blocking defect.
 

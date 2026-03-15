@@ -8,7 +8,26 @@
 #include "protocol_io.h"
 #include "version_info.h"
 
+namespace {
+static constexpr uint32_t DATA_BUS_MONITOR_INTERVAL_MS = 100;
+
+String dataBusToBinary(uint8_t value) {
+  String bits;
+  bits.reserve(8);
+  for (int bit = 7; bit >= 0; --bit) {
+    bits += ((value >> bit) & 0x01) ? '1' : '0';
+  }
+  return bits;
+}
+
+}  // namespace
+
 void setup() {
+  // Preload inactive level for active-low controls before enabling outputs.
+  digitalWrite(PIN_WE, HIGH);
+  digitalWrite(PIN_OE, HIGH);
+  digitalWrite(PIN_CE, HIGH);
+
   pinMode(PIN_WE, OUTPUT);
   pinMode(PIN_OE, OUTPUT);
   pinMode(PIN_CE, OUTPUT);
@@ -17,14 +36,8 @@ void setup() {
   digitalWrite(PIN_OE, HIGH);
   digitalWrite(PIN_CE, HIGH);
 
-  for (int pin = PA0; pin <= PA10; ++pin) {
-    pinMode(pin, OUTPUT);
-    digitalWrite(pin, LOW);
-  }
-  for (int pin = PB0; pin <= PB7; ++pin) {
-    pinMode(pin, OUTPUT);
-    digitalWrite(pin, LOW);
-  }
+  initAddressBusPins();
+  busSetAddress(0x00000);
 
   setDataBusMode(false);
 
@@ -54,6 +67,24 @@ void loop() {
           }
         } else {
           g_line += c;
+        }
+      } else if (g_dataBusMonitorActive) {
+        const uint32_t now = millis();
+        if (g_dataBusMonitorLastSampleMs == 0 ||
+            (now - g_dataBusMonitorLastSampleMs) >= DATA_BUS_MONITOR_INTERVAL_MS) {
+          if (g_dataBusMonitorAddrSet) {
+            busSetAddress(g_dataBusMonitorAddr & 0x7FFFFUL);
+          }
+          const uint8_t sample = busReadData();
+          String detail = dataBusToBinary(sample);
+          if (g_dataBusMonitorAddrSet) {
+            char addrHex[8];
+            snprintf(addrHex, sizeof(addrHex), "%05lX",
+                     static_cast<unsigned long>(g_dataBusMonitorAddr & 0x7FFFFUL));
+            detail = String("A=") + addrHex + ",D=" + detail;
+          }
+          sendStatus("DATA_BUS", "SAMPLE", 0, detail);
+          g_dataBusMonitorLastSampleMs = now;
         }
       }
       break;

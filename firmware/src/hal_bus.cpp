@@ -3,17 +3,53 @@
 #include "device_config.h"
 #include "device_globals.h"
 
-void setDataBusMode(bool output) {
-  if (g_dataBusIsOutput == output) {
+namespace {
+bool g_dataBusPinsConfigured = false;
+bool g_addressBusPinsConfigured = false;
+
+constexpr uint8_t kDataPins[] = {PB8, PB9, PB10, PB11,
+                                 PB12, PB13, PB14, PB15};
+
+constexpr uint8_t kAddrPinsPortA[] = {PA0, PA1, PA2, PA3, PA4, PA5,
+                                      PA6, PA7, PA8, PA9, PA10};
+constexpr uint8_t kAddrPinsPortB[] = {PB0, PB1, PB2, PB3,
+                                      PB4, PB5, PB6, PB7};
+
+inline void controlLinesIdle() {
+  digitalWrite(PIN_WE, HIGH);
+  digitalWrite(PIN_OE, HIGH);
+  digitalWrite(PIN_CE, HIGH);
+}
+
+void ensureAddressBusPinsOutput() {
+  if (g_addressBusPinsConfigured) {
     return;
   }
-  for (int pin = PB8; pin <= PB15; ++pin) {
+  for (uint8_t pin : kAddrPinsPortA) {
+    pinMode(pin, OUTPUT);
+    digitalWrite(pin, LOW);
+  }
+  for (uint8_t pin : kAddrPinsPortB) {
+    pinMode(pin, OUTPUT);
+    digitalWrite(pin, LOW);
+  }
+  g_addressBusPinsConfigured = true;
+}
+}
+
+void initAddressBusPins() {
+  ensureAddressBusPinsOutput();
+}
+
+void setDataBusMode(bool output) {
+  if (g_dataBusPinsConfigured && g_dataBusIsOutput == output) {
+    return;
+  }
+  for (uint8_t pin : kDataPins) {
     pinMode(pin, output ? OUTPUT : INPUT);
-    if (!output) {
-      digitalWrite(pin, LOW);
-    }
   }
   g_dataBusIsOutput = output;
+  g_dataBusPinsConfigured = true;
 }
 
 void chipSelect(bool enabled) {
@@ -29,12 +65,12 @@ void outputEnable(bool enabled) {
 
 void writeEnablePulse() {
   digitalWrite(PIN_WE, LOW);
-  delayMicroseconds(1);
   digitalWrite(PIN_WE, HIGH);
-  delayMicroseconds(1);
 }
 
 void busSetAddress(uint32_t addr) {
+  ensureAddressBusPinsOutput();
+
   uint8_t a0_a7 = static_cast<uint8_t>(addr & 0xFF);
   uint8_t a8_a15 = static_cast<uint8_t>((addr >> 8) & 0xFF);
   uint8_t a16_a18 = static_cast<uint8_t>((addr >> 16) & 0x07);
@@ -61,17 +97,26 @@ uint8_t busReadData() {
 }
 
 void writeCycle(uint32_t addr, uint8_t data) {
-  chipSelect(true);
+  // WE-driven write cycle: OE stays inactive, CE active only during pulse.
+  controlLinesIdle();
   outputEnable(false);
   busSetAddress(addr);
   busSetData(data);
+  chipSelect(true);
   writeEnablePulse();
+  chipSelect(false);
 }
 
 uint8_t readCycle(uint32_t addr) {
+  // Datasheet-style read window with CE/OE active during sampling.
+  controlLinesIdle();
+  setDataBusMode(false);
   chipSelect(true);
   outputEnable(true);
   busSetAddress(addr);
   delayMicroseconds(1);
-  return busReadData();
+  const uint8_t value = static_cast<uint8_t>((GPIOB->IDR >> 8) & 0xFF);
+  outputEnable(false);
+  chipSelect(false);
+  return value;
 }

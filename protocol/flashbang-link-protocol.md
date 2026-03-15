@@ -54,7 +54,10 @@ Read:
 - `READ 0x0001` => `0xB5`/`0xB6`/`0xB7`
 
 Exit:
-- `WRITE XX <- 0xF0` then wait `TIDA <= 150 ns`
+- `WRITE 0x5555 <- 0xAA`
+- `WRITE 0x2AAA <- 0x55`
+- `WRITE 0x5555 <- 0xF0`
+- then wait `TIDA <= 150 ns`
 
 ## Status Detection
 - Preferred: DQ6 toggle polling with stability double-check.
@@ -72,6 +75,10 @@ Exit:
 - `PROGRAM_STREAM_BEGIN|<addr-hex>|<len-dec>`
 - `PROGRAM_STREAM_DATA|<base64-chunk>`
 - `PROGRAM_STREAM_END`
+
+## Optional Diagnostic Commands
+- `DATA_BUS_MONITOR_START` starts continuous sampling of `D7..D0` and emits `STATUS|DATA_BUS|SAMPLE|0|<8-bit-binary>` frames.
+- `DATA_BUS_MONITOR_STOP` stops the continuous sampling stream.
 
 ## Responses
 - `OK|<command>|<context>`

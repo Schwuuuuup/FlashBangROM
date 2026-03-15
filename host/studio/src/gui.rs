@@ -6,13 +6,12 @@ use serialport::SerialPort;
 
 use crate::{
     protocol::{parse_device_frame, DeviceFrame},
-    report::{build_report, export_report_json, export_report_text, DiffReport},
+    report::{export_report_json, export_report_text, DiffReport},
     session::{
-        list_serial_ports, open_serial_port, ChipId, DeviceSession, HelloInfo, MockSession,
+        list_serial_ports, open_serial_port, ChipId, HelloInfo,
         SerialPortEntry,
     },
     version,
-    verify::compute_diff,
 };
 
 pub fn run_gui() -> Result<(), eframe::Error> {
@@ -64,8 +63,7 @@ pub struct FlashBangGuiApp {
 
 impl FlashBangGuiApp {
     fn new() -> Self {
-        let mut data = AppData::default();
-        load_mock_data(&mut data);
+        let data = AppData::default();
 
         let available_ports = list_serial_ports().unwrap_or_default();
 
@@ -80,7 +78,7 @@ impl FlashBangGuiApp {
             serial_handle: None,
             wire_log: Vec::new(),
             show_about: false,
-            status: "Demo mode: mock SST39SF040 loaded (no hardware).".to_string(),
+            status: "Nicht verbunden. Verbinde ein Geraet fuer Live-Daten.".to_string(),
         }
     }
 
@@ -190,6 +188,7 @@ impl FlashBangGuiApp {
                             capabilities: capabilities.split(',').map(String::from).collect(),
                         });
                         self.status = format!("Firmware erkannt: {fw_version}");
+                        self.query_chip_id();
                         return;
                     }
                 }
@@ -200,52 +199,75 @@ impl FlashBangGuiApp {
             }
         }
     }
-}
 
-fn load_mock_data(data: &mut AppData) {
-    let mut session = MockSession::new();
+    fn query_chip_id(&mut self) {
+        match self.serial_send_and_read_lines("ID", 4) {
+            Ok(lines) => {
+                for line in lines {
+                    if let Ok(DeviceFrame::Ok { command, detail }) = parse_device_frame(&line) {
+                        if command != "ID" {
+                            continue;
+                        }
 
-    match session.handshake() {
-        Ok(hello) => {
-            data.log.push(format!(
-                "HELLO: fw={} protocol={}",
-                hello.fw_version, hello.protocol_version
-            ));
-            data.hello = Some(hello);
-        }
-        Err(e) => data.log.push(format!("HELLO failed: {e}")),
-    }
+                        let mut mfr = 0u8;
+                        let mut dev = 0u8;
+                        let mut has_mfr = false;
+                        let mut has_dev = false;
 
-    match session.identify() {
-        Ok(chip) => {
-            data.log.push(format!(
-                "ID: {} (MFR=0x{:02X} DEV=0x{:02X})",
-                chip.name, chip.manufacturer_id, chip.device_id
-            ));
-            data.chip = Some(chip);
-        }
-        Err(e) => data.log.push(format!("ID failed: {e}")),
-    }
+                        for kv in detail.split(',') {
+                            let mut parts = kv.splitn(2, '=');
+                            let key = parts.next().unwrap_or("").trim().to_lowercase();
+                            let value = parts
+                                .next()
+                                .unwrap_or("")
+                                .trim()
+                                .trim_start_matches("0x")
+                                .trim_start_matches("0X");
+                            if let Ok(v) = u8::from_str_radix(value, 16) {
+                                match key.as_str() {
+                                    "mf" | "manufacturer" => {
+                                        mfr = v;
+                                        has_mfr = true;
+                                    }
+                                    "dev" | "device" => {
+                                        dev = v;
+                                        has_dev = true;
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
 
-    let read_len = 4096u32;
-    match session.read_range(0, read_len, &mut |_, _| {}) {
-        Ok(bytes) => {
-            data.log.push(format!("READ OK: {} bytes", bytes.len()));
+                        if has_mfr && has_dev {
+                            if let Some(chip) = ChipId::from_ids(mfr, dev) {
+                                self.data.chip = Some(chip.clone());
+                                self.data.log.push(format!(
+                                    "ID: {} (MFR=0x{:02X} DEV=0x{:02X})",
+                                    chip.name, chip.manufacturer_id, chip.device_id
+                                ));
+                                self.status = format!("Chip erkannt: {}", chip.name);
+                            } else {
+                                self.data.chip = None;
+                                self.data.log.push(format!(
+                                    "ID unknown: MFR=0x{:02X} DEV=0x{:02X}",
+                                    mfr, dev
+                                ));
+                                self.status =
+                                    format!("Chip nicht erkannt: MFR=0x{:02X} DEV=0x{:02X}", mfr, dev);
+                            }
+                        }
+                        return;
+                    }
+                }
 
-            let mut expected = bytes.clone();
-            if expected.len() > 0x100B {
-                expected[0x1000] = 0xDE;
-                expected[0x1001] = 0xAD;
-                expected[0x1002] = 0xBE;
-                expected[0x1003] = 0xEF;
-                expected[0x100A] = 0xFF;
+                self.data.chip = None;
+                self.status = "Keine verwertbare ID-Antwort erhalten".to_string();
             }
-
-            let diff = compute_diff(0x0000, &expected, &bytes);
-            data.diff_report = Some(build_report(&diff));
-            data.read_data = bytes;
+            Err(e) => {
+                self.data.chip = None;
+                self.status = format!("ID-Abfrage fehlgeschlagen: {e}");
+            }
         }
-        Err(e) => data.log.push(format!("READ failed: {e}")),
     }
 }
 
@@ -375,6 +397,8 @@ impl eframe::App for FlashBangGuiApp {
                         );
                         self.serial_handle = Some(handle);
                         self.connected_port_name = Some(port.name.clone());
+                        // Replace mock/demo identity with live data only.
+                        self.data.chip = None;
                         self.status = format!("Connected to {} @ {} baud", port.name, self.baud_rate);
                         do_query_fw = true;
                     }

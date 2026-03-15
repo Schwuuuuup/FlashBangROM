@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 
+void initAddressBusPins();
 void setDataBusMode(bool output);
 void chipSelect(bool enabled);
 void outputEnable(bool enabled);
