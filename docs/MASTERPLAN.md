@@ -87,6 +87,8 @@ Progress log:
 - 2026-03-15: Cleaned up obsolete remote branch `copilot/extend-flashbang-system-features`; only `origin/main` remains.
 - 2026-03-15: First release workflow run from tag `v0.1.1` failed in `Test Host` on GitHub Actions.
 - 2026-03-15: Hardened CI/release host test environment by installing Linux build deps (`pkg-config`, `libudev-dev`) and enforcing `cargo test --locked` in both `host-ci` and `release` workflows.
+- 2026-03-15: Follow-up release run from tag `v0.1.2` passed firmware+host build/tests but failed at `Create GitHub Release` due to missing explicit workflow token permissions.
+- 2026-03-15: Updated release workflow with `permissions: contents: write` to allow tag-based GitHub release creation via `GITHUB_TOKEN`.
 
 ## M2 - Firmware Command Engine (SST39)
 Status: In Progress
