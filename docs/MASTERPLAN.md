@@ -1,147 +1,211 @@
-# FlashBang Master Plan
+# FlashBangROM Master Plan
 
-This file is the single source of truth for project status, decisions, risks, and next actions.
+This file is the single source of truth for long-term project direction, durable decisions, constraints, and planning-relevant knowledge.
 
 ## Mandatory Process Reminder
-- All information about project status must be written into this master plan.
+- All long-term planning relevance must be written into this master plan.
 - Every new session must start by reading this master plan.
-- A task is not done until this master plan is updated.
+- This section is mandatory and must remain at the top of the file.
+- Execution history, implemented steps, investigations, and operational cleanup must be documented in `docs/DEV_LOG.md`.
+- If an action results in a conclusion, that should be obayed in the future, this master plan must be updated to reflect the new durable truth.
+- A task is not done until:
+	- its durable planning implications are reflected here, and
+	- its concrete execution steps are recorded in `docs/DEV_LOG.md`.
 
-## Current Scope
-- Core target: SST39 family only.
-- Extra target: non-SST39 chip support.
+## Project Identity
+- Project name: `FlashBangROM`.
+- Product goal: ROM programmer platform built around STM32 boards and external parallel ROM/flash devices.
+- Repository strategy: monorepo.
+- Host application language: Rust.
+- Current firmware platform: BluePill (`STM32F103C8`) using PlatformIO with Arduino framework.
 
-## Milestones
+## Scope
+- Minimal viable scope:
+	- BluePill + SST39 flash family.
+- Next scope expansion:
+	- BluePill + additional ROM/flash families.
+	- Winbond devices are the highest-priority next family after SST39.
+- Long-term hardware expansion:
+	- BlackPill as a future platform target (if viable).
 
-## M1 - SST39 Core Foundation
-Status: In Progress
+## Goals
+- Deliver a reliable SST39 programming workflow with identify, read, erase, program, verify, and diff support.
+- Preserve a path for adding more device families without rewriting the host/firmware contract.
+- Keep firmware modular enough that command parsing, bus control, and chip-specific operations remain separable.
+- Maintain GitHub-based release automation for tagged builds.
+- Provide a beginner-friendly documentation to recreate the hardware and software setup.
 
-Deliverables:
-- Repository scaffold with module boundaries.
-- Protocol v0.1 contract-first skeleton.
-- Driver schema and SST39 core descriptor.
-- Firmware state-machine skeleton.
-- Host app skeleton with verify/diff model design.
-- Hardware mod docs skeleton.
+## Nice-To-Haves
+- Keep host-side UI and protocol work testable without requiring permanent hardware access.
+- Support visual diffing of readback data against expected values in the host app.
 
-Acceptance:
-- Core SST39 operation list is explicitly specified in protocol and architecture docs.
-- Verify and visual diff are explicit host requirements.
-- No files in prototype directories are changed.
+## Non-Goals
+- Support additional Microcontrollers that require additional Hardware to get to the 30 GPIOs needed for the target bus and control lines.
 
-Progress log:
-- 2026-03-15: Initialized repository structure under `STM32_ROM_Flasher`.
-- 2026-03-15: Added root docs and baseline planning artifacts.
-- 2026-03-15: Added protocol draft (`protocol/flashbang-link-protocol.md`) with explicit SST39 core operations.
-- 2026-03-15: Added driver schema and initial `sst39-core` descriptor.
-- 2026-03-15: Added firmware FSM skeleton (`firmware/src/main.cpp`) for core command flow.
-- 2026-03-15: Added Rust host skeleton and verify diff module with passing unit tests (2/2).
-- 2026-03-15: Added CI workflow stubs for host and firmware builds.
-- 2026-03-15: Added normalized SST39 text-protocol notes in `docs/SST39_CHIP_PROTOCOL_NOTES.md` from `Resources/SST39SF_Protocol_fuer_KI.txt`.
-- 2026-03-15: Updated protocol spec with normative SST39 command sequences (Program/Sector Erase/Chip Erase/ID Entry/Exit) and timing defaults.
-- 2026-03-15: Updated `drivers/chips/sst39-core.yaml` timing defaults to match SST39 text spec.
-- 2026-03-15: Replaced firmware mock-only flow with SST39 sequence-oriented command engine skeleton (unlock sequences, ID flow, toggle/DQ7 polling, timeout guards).
-- 2026-03-15: Implemented BluePill HAL bus/control wiring in firmware (CE/OE/WE control, address/data bus access, data bus direction switching).
-- 2026-03-15: Implemented `READ` command data output path with deterministic `DATA|<addr>|<len>|<hex-bytes>` chunk frames.
-- 2026-03-15: Added host protocol parser module with golden tests for valid/malformed frames.
-- 2026-03-15: Added verify report module with mismatch-range grouping and text/JSON export support.
-- 2026-03-15: Validation status: `cargo test` passed (8/8), `pio run` passed for firmware build.
-- 2026-03-15: Validation status: `cargo test` passed (8/8), `pio run` passed for firmware build.
-- 2026-03-15: Added mock device simulator (`mock_device.rs`) — SST39SF040 in-memory responses (HELLO/ID/READ/ERASE/PROGRAM) without hardware.
-- 2026-03-15: Added `DeviceSession` trait and `MockSession` (`session.rs`) — clean abstraction over real vs. mock serial backend.
-- 2026-03-15: Added ratatui 0.27 TUI preview (`tui.rs`) — 3-tab terminal UI (Chip Info, Hex Dump, Diff View) fully runnable without MCU via `cargo run -- --demo`. Pinned ratatui=0.27.0/crossterm=0.27 for Rust 1.75 compatibility.
-- 2026-03-15: Wired `--demo` flag in `main.rs`; `cargo test` still 8/8.
-- 2026-03-15: Added real desktop GUI preview (`gui.rs`) using native window rendering (eframe/egui) with tabs for Chip Info, Hex Dump, Diff View and export actions.
-- 2026-03-15: GUI now starts via `cargo run` (default) or `cargo run -- --gui`; existing TUI remains available via `cargo run -- --demo`.
-- 2026-03-15: Pinned GUI dependency chain for Rust/Cargo 1.75 compatibility (`eframe 0.24.1`, `webbrowser 0.8.12`, `url 2.4.1`, `home 0.5.5`); validation status unchanged (`cargo test` 8/8).
-- 2026-03-15: Added real serial groundwork in host (`serialport 4.3.0`) with reusable helpers in `session.rs` for port scan and open.
-- 2026-03-15: Extended desktop GUI with live serial workflow: refresh/list ports, select port, set baud rate, connect/disconnect, and live connection status in top bar.
-- 2026-03-15: Validation status after serial GUI integration: `cargo build` passed, `cargo test` passed (8/8).
-- 2026-03-15: Added firmware version query from GUI (`HELLO` command) with parsing/display of firmware + protocol/capabilities in the Device panel.
-- 2026-03-15: While connected, serial configuration controls (port selection, baud rate, refresh) are disabled to prevent runtime link changes; reconnect path remains explicit via Disconnect.
-- 2026-03-15: Added serial debug monitor panel in GUI: TX lines shown in red and RX lines shown in green for trace/debugging.
-- 2026-03-15: Added menu bar with `Help -> About FlashBang Studio` information dialog.
-- 2026-03-15: Validation after latest GUI features: `cargo build` passed, `cargo test` passed (8/8).
-- 2026-03-15: Refactored firmware from monolithic `main.cpp` into modular units for maintainability:
-	- `include/`: `device_types.h`, `device_config.h`, `device_globals.h`, `protocol_io.h`, `command_parser.h`, `hal_bus.h`, `sst39_ops.h`, `command_executor.h`.
-	- `src/`: `device_globals.cpp`, `protocol_io.cpp`, `command_parser.cpp`, `hal_bus.cpp`, `sst39_ops.cpp`, `command_executor.cpp`.
-	- `main.cpp` now contains only setup/loop orchestration and FSM transitions.
-- 2026-03-15: Validation after firmware modularization: `pio run` passed (Flash 47.0%, RAM 21.8%).
-- 2026-03-15: Prepared repository for Git/GitHub workflows: added `.gitattributes`, expanded `.gitignore`, and updated CI checkout to fetch full history/tags for build metadata.
-- 2026-03-15: Added automatic Git-derived version/build metadata for firmware and host.
-	- Firmware: PlatformIO pre-build script generates `firmware/include/generated_build_info.h`; `HELLO` now reports dynamic version text.
-	- Host: `build.rs` injects version/build/sha/dirty metadata; CLI and GUI About dialog display it.
-	- Version format: `<latest-tag>+build.<commit-count>.<short-sha>` with optional `.dirty` suffix.
-- 2026-03-15: Current repository state has no first commit yet; fallback build identifier is `0.0.0+build.0.nogit` until the initial commit exists.
-- 2026-03-15: Validation after versioning integration: `cargo test` passed (8/8), `pio run` passed.
-- 2026-03-15: Created initial repository commit (`4aa4a355`) and first semantic tag `v0.1.0`.
-- 2026-03-15: Automatic versioning is now active from real history: firmware/host both report `0.1.0+build.1.4aa4a355` (clean tree).
-- 2026-03-15: Post-tag validation passed: `pio run` success, `cargo test` success (8/8), host CLI prints dynamic version text.
-- 2026-03-15: Added formal release process documentation (`docs/RELEASE_WORKFLOW.md`) and linked it from README.
-- 2026-03-15: Added GitHub tag-release workflow (`.github/workflows/release.yml`) to build firmware, run host tests, upload firmware artifact, and create GitHub release notes on `v*` tags.
-- 2026-03-15: Added ignore rules for generated host verify report files to keep working tree clean during normal usage.
-- 2026-03-15: Validation after release-workflow prep: `cargo test` passed (8/8), `pio run` passed.
-- 2026-03-15: Configured GitHub remote (`origin`) and published local repository to `https://github.com/Schwuuuuup/FlashBangROM.git`.
-- 2026-03-15: Resolved non-fast-forward push by replacing remote `main` with local history as requested (`--force-with-lease`), then pushed tag `v0.1.0`.
-- 2026-03-15: Local `main` now tracks `origin/main`; CI/release workflows are now active on GitHub.
-- 2026-03-15: Cleaned up obsolete remote branch `copilot/extend-flashbang-system-features`; only `origin/main` remains.
-- 2026-03-15: First release workflow run from tag `v0.1.1` failed in `Test Host` on GitHub Actions.
-- 2026-03-15: Hardened CI/release host test environment by installing Linux build deps (`pkg-config`, `libudev-dev`) and enforcing `cargo test --locked` in both `host-ci` and `release` workflows.
-- 2026-03-15: Follow-up release run from tag `v0.1.2` passed firmware+host build/tests but failed at `Create GitHub Release` due to missing explicit workflow token permissions.
-- 2026-03-15: Updated release workflow with `permissions: contents: write` to allow tag-based GitHub release creation via `GITHUB_TOKEN`.
-- 2026-03-15: Verified end-to-end GitHub release automation with tag `v0.1.3`: `firmware-ci`/`host-ci`/`release` all succeeded and GitHub Release `v0.1.3` was published with attached `firmware.bin` artifact.
+## Hardware Baseline
+- Bus assignment strategy: GPIO ports A and B are assigned to buses in whole 8-bit blocks, which allows the firmware to read/write an entire byte via a single masked register access (`GPIOX->ODR` / `GPIOX->IDR`) without bit-banging individual pins.
+- Current control pin allocation from firmware:
+	- `PA14` -> `WE`
+	- `PA13` -> `OE`
+	- `PA15` -> `CE`
+- Current address bus allocation from firmware:
+	- `PA0..PA7` -> `A0..A7`   (low byte of address — Port A low byte)
+	- `PB0..PB7` -> `A8..A15`  (high byte of address — Port B low byte)
+	- `PA8..PA10` -> `A16..A18` (upper 3 address bits — Port A high byte, bits 8–10)
+- Current data bus allocation from firmware:
+	- `PB8..PB15` -> `D0..D7`  (data byte — Port B high byte, 5 V-tolerant pins)
+- Host/device communication baseline:
+	- serial line protocol over `115200` baud.
 
-## M2 - Firmware Command Engine (SST39)
-Status: In Progress
+## Hardware Notes And Required Documentation
+- The project depends on reclaiming almost all BluePill GPIOs for the ROM interface.
+- `PA13`, `PA14`, and `PA15` are currently used as ROM control pins, which implies debug/SWD/JTAG default usage must be disabled or remapped appropriately.
+- GPIO release procedure (must be called early in firmware init before configuring any of the affected pins):
+  ```c
+	__HAL_RCC_AFIO_CLK_ENABLE();       // Enable AFIO clock - required before any AFIO configuration
 
-Deliverables:
-- Parser and explicit FSM transitions.
-- Read/ID/erase/program/status paths wired to BluePill HAL.
-- Unit-testable command handlers.
+	__HAL_AFIO_REMAP_SWJ_DISABLE();    // Disable JTAG and SWD completely - releases PA13, PA14, PA15, PB3, PB4 as GPIO
 
-## M3 - Host Protocol + Verify UI
-Status: In Progress
+	__HAL_RCC_SPI1_CLK_DISABLE();      // Shut down SPI1 peripheral - releases PA4, PA5, PA6, PA7
+	__HAL_RCC_I2C1_CLK_DISABLE();      // Shut down I2C1 peripheral - releases PB6, PB7 (or PB8, PB9 if remapped)
+	__HAL_RCC_USART1_CLK_DISABLE();    // Shut down USART1 peripheral - releases PA9, PA10
+	__HAL_RCC_USART2_CLK_DISABLE();    // Shut down USART2 peripheral - releases PA2, PA3
+  ```
+- `BOOT1` / `PB2` hardware modification required to use `PB2` as address line `A10`:
+  - `PB2` is physically tied to the `BOOT1` jumper on the BluePill through a `100 kΩ` series resistor.
+  - That resistor must be **shorted** so the STM32 can drive the pin without it being loaded by the jumper circuit.
+  - A `100 kΩ` pull-down to GND must be added between the `PB2` node and ground to prevent the HID-flash bootloader from being accidentally triggered.
+  - Schematic before modification: `STM32(PB2) ──[100K]── BOOT1`
+  - Schematic after modification:
+    ```
+    STM32(PB2) ────+──── BOOT1
+                   |
+                [100K]
+                   |
+                  GND
+    ```
+  - This modification does not affect any other normal BluePill functionality.
+- Physical ROM socket wiring and electrical assumptions (SST39 DIP-32 baseline):
+	- The definitive connection list is the table below (single source of truth for wiring).
+	- Level assumptions:
+		- Address and control outputs from STM32 are `3.3V` logic.
+		- Data lines use `PB8..PB15`, which are 5V-tolerant on STM32F103 input side.
+		- ROM at `5V` power must recognize STM32 `3.3V` high level on address/control inputs; this is accepted for current SST39 baseline wiring.
+	- Pull-up/pull-down requirements:
+		- Keep the `PB2/BOOT1` modification pull-down (`100K` to GND) in place as documented above.
+		- No additional mandatory external pull resistors are currently required on address/data/control lines for baseline operation.
+- Definitive hardware mapping table (BluePill <-> ROM, with reservation notes):
 
-Deliverables:
-- Rust protocol client and command queue.
-- Read/write/erase/identify workflows.
-- Verify execution and visual diff output.
+	| ROM signal | ROM pin | BluePill pin | Electrical note | Reservation note |
+	|---|---:|---|---|---|
+	| A0 | 12 | PA0 | 3.3V output | - |
+	| A1 | 11 | PA1 | 3.3V output | - |
+	| A2 | 10 | PA2 | 3.3V output | USART2 default pin (released when disabled) |
+	| A3 | 9 | PA3 | 3.3V output | USART2 default pin (released when disabled) |
+	| A4 | 8 | PA4 | 3.3V output | SPI1 default pin (released when disabled) |
+	| A5 | 7 | PA5 | 3.3V output | SPI1 default pin (released when disabled) |
+	| A6 | 6 | PA6 | 3.3V output | SPI1 default pin (released when disabled) |
+	| A7 | 5 | PA7 | 3.3V output | SPI1 default pin (released when disabled) |
+	| A8 | 27 | PB0 | 3.3V output | - |
+	| A9 | 26 | PB1 | 3.3V output | - |
+	| A10 | 23 | PB2 | 3.3V output | BOOT1 jumper pin, hardware mod required |
+	| A11 | 25 | PB3 | 3.3V output | JTAG TDO default pin, SWJ disable required |
+	| A12 | 4 | PB4 | 3.3V output | JTAG TRST default pin, SWJ disable required |
+	| A13 | 28 | PB5 | 3.3V output | - |
+	| A14 | 29 | PB6 | 3.3V output | I2C1 default pin (released when disabled) |
+	| A15 | 3 | PB7 | 3.3V output | I2C1 default pin (released when disabled) |
+	| A16 | 2 | PA8 | 3.3V output | - |
+	| A17 | 30 | PA9 | 3.3V output | USART1 default pin (released when disabled) |
+	| A18 | 1 | PA10 | 3.3V output | USART1 default pin (released when disabled) |
+	| D0 | 13 | PB8 | 5V-tolerant data pin | I2C1 remap alt pin |
+	| D1 | 14 | PB9 | 5V-tolerant data pin | I2C1 remap alt pin |
+	| D2 | 15 | PB10 | 5V-tolerant data pin | - |
+	| D3 | 17 | PB11 | 5V-tolerant data pin | - |
+	| D4 | 18 | PB12 | 5V-tolerant data pin | - |
+	| D5 | 19 | PB13 | 5V-tolerant data pin | - |
+	| D6 | 20 | PB14 | 5V-tolerant data pin | - |
+	| D7 | 21 | PB15 | 5V-tolerant data pin | - |
+	| WE# | 31 | PA14 | 3.3V control | SWDCLK default pin, SWJ disable required |
+	| OE# | 24 | PA13 | 3.3V control | SWDIO default pin, SWJ disable required |
+	| CE# | 22 | PA15 | 3.3V control | JTAG TDI default pin, SWJ disable required |
+	| VDD | 32 | +5V rail | ROM supply | - |
+	| VSS | 16 | GND | Ground | - |
 
-## M4 - BluePill Hardware Validation
-Status: Not Started
+	CRITICAL: Reserved/unavailable BluePill pins for this baseline:
+	- `PA11`, `PA12` reserved for USB/HID bootloader path.
+	- `PC13` reserved for onboard LED.
+	- `PC14`, `PC15` reserved for LSE/oscillator usage on many boards.
 
-Deliverables:
-- Validation checklist for wiring and boot pin mod.
-- Smoke tests on real hardware.
-- Known issues and mitigations documented.
+## Protocol Requirements
+- The protocol must remain deterministic and easy to parse in firmware and host code.
+- Protocol versioning is mandatory to prevent host/firmware drift.
+- Current handshake requirement:
+	- host sends `HELLO|<host-version>|<protocol-version>`
+	- device responds `HELLO|<fw-version>|<protocol-version>|<capabilities>`
+- Required core command set for the current minimal scope:
+	- `ID`
+	- `READ|<addr-hex>|<len-dec>`
+	- `PROGRAM_BYTE|<addr-hex>|<value-hex>`
+	- `SECTOR_ERASE|<addr-hex>`
+	- `CHIP_ERASE`
+	- `WRITE_STATUS|<addr-hex>|<expected-hex>|<timeout-ms-dec>`
+- Required response types:
+	- `OK|<command>|<context>`
+	- `ERR|<code>|<message>`
+	- `DATA|<addr-hex>|<len-dec>|<hex-bytes>`
+	- `STATUS|<operation>|<phase>|<progress-dec>|<detail>`
+- Required error vocabulary:
+	- `E_PARSE`, `E_RANGE`, `E_ALIGN`, `E_UNSUPPORTED`, `E_TIMEOUT`, `E_VERIFY`, `E_HW`
+- Current bring-up transport decision:
+	- line-based framing
+	- hex payloads for data frames
+- Required verify flow:
+	- host performs write operation
+	- host reads back the affected range
+	- host computes mismatch list and visual diff
+	- host may persist a report file
+- Normative chip behavior for SST39 must remain encoded in firmware and protocol docs:
+	- unlock/program sequence
+	- sector erase sequence
+	- chip erase sequence
+	- software product ID entry/read/exit
+	- DQ6/DQ7-based completion detection
+- Binary-safe framing remains a planned future protocol evolution, but not the current baseline.
 
-## M5 - GitHub Release Readiness
-Status: Not Started
+## Planning Decisions
+- `FlashBangROM` is the canonical project name going forward.
+- BluePill + SST39 is the minimum shippable platform.
+- BluePill + Winbond support is the next device-family priority after SST39.
+- BlackPill support is a strategic later step, not a current baseline requirement.
+- Rust remains the host language.
+- PlatformIO + Arduino remains the firmware build stack until there is a concrete reason to migrate.
+- GitHub release publishing is desired and should stay tag-driven.
+- GUI work is allowed to progress in mock/demo mode before full hardware integration is finished.
 
-Deliverables:
-- CI workflows.
-- Contribution and security docs.
-- First tagged pre-release.
+## Insights For Future Sessions
+- Early GUI and protocol work did not need permanent hardware access; the mock-device path was useful and should be preserved.
+- A purely historical activity list in the master plan makes future planning harder; execution history belongs in `docs/DEV_LOG.md` instead.
+- Rust/toolchain compatibility mattered in practice:
+	- newer dependency versions pulled in requirements that did not fit the available Rust baseline,
+	- therefore dependencies were pinned to versions compatible with Rust/Cargo `1.75`.
+- GUI/library compatibility mattered in practice:
+	- the native GUI path needed version pinning in the `eframe`/supporting crate stack to remain compatible with the chosen Rust baseline.
+- Linux CI for the host build required additional system packages for the serial stack.
+- GitHub release automation required explicit workflow token permissions (`contents: write`) in addition to a working build/test pipeline.
+- Git-derived version metadata is useful and should stay, but it requires full tag/history availability in CI.
+- Hardware timing assumptions are still provisional until confirmed on real boards with measurement tools.
 
-## Decision Log
-- 2026-03-15: Product name is `FlashBang`.
-- 2026-03-15: Use monorepo strategy.
-- 2026-03-15: Host app will be Rust-based.
-- 2026-03-15: SST39 family is core scope; other chips are extras.
+## Constraints And Environment
+- Hardware constraints:
+	- BluePill GPIO count is tight for the targeted bus width and control lines.
+	- BluePill clone variance can affect timing and electrical behavior.
+	- Safe bus-direction switching is critical to avoid contention on the data bus.
+- Build environment constraints:
+	- Host build baseline should remain compatible with Rust/Cargo `1.75` unless deliberately upgraded.
+	- Linux CI for the Rust host requires serial-stack build dependencies.
+	- Firmware and host version strings are derived from Git tags/history.
+- Quality constraints:
+	- Datasheet timing and command assumptions must remain encoded, not left implicit.
+	- Protocol changes must not silently break compatibility between host and firmware.
+	- Real hardware validation is still required before trusting timing-sensitive behavior.
 
-## Risks
-- Datasheet interpretation drift if command timings are not encoded and tested.
-- Hardware variance across BluePill clones.
-- Protocol changes can break host/firmware compatibility without version gating.
-- Hardware correctness still depends on live board verification (logic/timing on real BluePill + flash chip).
-- Current protocol payload format is hex for bring-up; binary-safe framing/base64 remains a planned protocol evolution.
-
-## Next Actions
-1. Perform real hardware validation of HAL timing and control sequencing on BluePill (scope/logic-analyzer checks for WE/OE/CE and bus stability).
-2. Add firmware-side protocol self-check tests for parser/command routing and error paths (`E_PARSE`, `E_RANGE`, `E_TIMEOUT`) against the new modular parser/executor units.
-3. Build `RealSession` on top of connected serial port for `ID/READ/ERASE/PROGRAM` command/response framing and timeout/error handling (HELLO query already available in GUI).
-4. Extend desktop GUI Diff View: per-byte detail table, mismatch-highlighted Hex Dump, and range jump/navigation.
-5. Add detailed BluePill hardware modification steps with photo placeholders and checklist.
-6. **GUI demo available now**: `cargo run` (or `cargo run -- --gui`) launches a native desktop preview without hardware.
-7. Optional fallback demo: `cargo run -- --demo` launches the terminal UI preview.
-8. Keep release flow as baseline: each new `v*` tag should auto-build firmware, test host, and publish `firmware.bin` in GitHub Releases.
