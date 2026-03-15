@@ -89,6 +89,7 @@ Progress log:
 - 2026-03-15: Hardened CI/release host test environment by installing Linux build deps (`pkg-config`, `libudev-dev`) and enforcing `cargo test --locked` in both `host-ci` and `release` workflows.
 - 2026-03-15: Follow-up release run from tag `v0.1.2` passed firmware+host build/tests but failed at `Create GitHub Release` due to missing explicit workflow token permissions.
 - 2026-03-15: Updated release workflow with `permissions: contents: write` to allow tag-based GitHub release creation via `GITHUB_TOKEN`.
+- 2026-03-15: Verified end-to-end GitHub release automation with tag `v0.1.3`: `firmware-ci`/`host-ci`/`release` all succeeded and GitHub Release `v0.1.3` was published with attached `firmware.bin` artifact.
 
 ## M2 - Firmware Command Engine (SST39)
 Status: In Progress
@@ -143,4 +144,4 @@ Deliverables:
 5. Add detailed BluePill hardware modification steps with photo placeholders and checklist.
 6. **GUI demo available now**: `cargo run` (or `cargo run -- --gui`) launches a native desktop preview without hardware.
 7. Optional fallback demo: `cargo run -- --demo` launches the terminal UI preview.
-8. Create a follow-up release tag after CI fix and confirm GitHub release generation plus attached firmware artifact.
+8. Keep release flow as baseline: each new `v*` tag should auto-build firmware, test host, and publish `firmware.bin` in GitHub Releases.
