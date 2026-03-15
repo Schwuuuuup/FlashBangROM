@@ -1,0 +1,21 @@
+id: sst39-core
+family: SST39
+name: SST39 Core Profile
+jedec_ids:
+- "0xBFB5"
+- "0xBFB6"
+- "0xBFB7"
+size_bytes: 524288
+sector_size_bytes: 4096
+algorithm_profile: sst39-byte-programming
+operations:
+  read: true
+  program_byte: true
+  sector_erase: true
+  chip_erase: true
+  write_status: true
+  chip_id: true
+timing:
+  program_timeout_ms: 1
+  sector_erase_timeout_ms: 50
+  chip_erase_timeout_ms: 250

@@ -1,0 +1,29 @@
+name: host-ci
+
+on:
+  push:
+    paths:
+    - "host/studio/**"
+    - ".github/workflows/host-ci.yml"
+  pull_request:
+    paths:
+    - "host/studio/**"
+    - ".github/workflows/host-ci.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: host/studio
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Run tests
+      run: cargo test --all-targets

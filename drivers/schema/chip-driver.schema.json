@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://flashbang.local/schema/chip-driver.schema.json",
+  "title": "FlashBang Chip Driver Descriptor",
+  "type": "object",
+  "required": [
+    "id",
+    "family",
+    "name",
+    "jedec_ids",
+    "size_bytes",
+    "sector_size_bytes",
+    "algorithm_profile",
+    "operations"
+  ],
+  "properties": {
+    "id": {"type": "string"},
+    "family": {"type": "string"},
+    "name": {"type": "string"},
+    "jedec_ids": {
+      "type": "array",
+      "items": {"type": "string", "pattern": "^0x[0-9A-Fa-f]{4}$"},
+      "minItems": 1
+    },
+    "size_bytes": {"type": "integer", "minimum": 1},
+    "sector_size_bytes": {"type": "integer", "minimum": 1},
+    "algorithm_profile": {"type": "string"},
+    "operations": {
+      "type": "object",
+      "required": ["read", "program_byte", "sector_erase", "chip_erase", "write_status", "chip_id"],
+      "properties": {
+        "read": {"type": "boolean"},
+        "program_byte": {"type": "boolean"},
+        "sector_erase": {"type": "boolean"},
+        "chip_erase": {"type": "boolean"},
+        "write_status": {"type": "boolean"},
+        "chip_id": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "timing": {
+      "type": "object",
+      "properties": {
+        "program_timeout_ms": {"type": "integer", "minimum": 1},
+        "sector_erase_timeout_ms": {"type": "integer", "minimum": 1},
+        "chip_erase_timeout_ms": {"type": "integer", "minimum": 1}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,28 @@
+# Rust
+host/studio/target/
+
+# PlatformIO
+firmware/.pio/
+firmware/.pioenvs/
+firmware/.piolibdeps/
+
+# Editors/OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
+*.tmp
+*.bak
+
+# Logs
+*.log
+
+# Firmware artifacts
+firmware/.pio/build/
+firmware/*.bin
+firmware/*.elf
+firmware/include/generated_build_info.h
+
+# Python
+__pycache__/
+*.pyc

@@ -1,0 +1,15 @@
+[package]
+name = "flashbang-studio"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ratatui = "=0.27.0"
+crossterm = "0.27"
+eframe = { version = "=0.24.1", default-features = false, features = ["default_fonts", "glow", "x11"] }
+home = "=0.5.5"
+webbrowser = "=0.8.12"
+url = "=2.4.1"
+serialport = "=4.3.0"

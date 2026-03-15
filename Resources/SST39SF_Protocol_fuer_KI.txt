@@ -1,0 +1,691 @@
+================================================================================
+SST39SF010A / SST39SF020A / SST39SF040
+CHIP-PROTOKOLL FUER KI-GESTUETZTE STATEMACHINE-IMPLEMENTIERUNG
+Basis: Microchip Datenblatt DS20005022F (Mai 2025)
+================================================================================
+
+Dieses Dokument beschreibt ausschliesslich das Chip-seitige Protokoll.
+Die Hardware-Anbindung (z.B. Mikrocontroller-GPIO, Bustreiber, Levelshifter)
+ist nicht Gegenstand dieser Beschreibung und wird von einer separaten KI
+behandelt.
+
+================================================================================
+ABSCHNITT 1: CHIP-FAMILIE UND SPEICHERORGANISATION
+================================================================================
+
+Es gibt drei Varianten mit identischem Protokoll aber unterschiedlicher
+Kapazitaet:
+
+  SST39SF010A  ->  1 Mbit  ->  128 Kbyte  ->  32 Sektoren a 4 Kbyte
+  SST39SF020A  ->  2 Mbit  ->  256 Kbyte  ->  64 Sektoren a 4 Kbyte
+  SST39SF040   ->  4 Mbit  ->  512 Kbyte  -> 128 Sektoren a 4 Kbyte
+
+Busbreite: 8 Bit Daten (DQ7..DQ0), Adressen je nach Variante:
+
+  SST39SF010A  ->  A16..A0  (17 Adressbits)
+  SST39SF020A  ->  A17..A0  (18 Adressbits)
+  SST39SF040   ->  A18..A0  (19 Adressbits)
+
+Der hoechste Adresspin wird im Datenblatt als "AMS" (Most Significant Address)
+bezeichnet. In allen Kommandosequenzen koennen die Bits AMS..A15 waehrend der
+SDP-Unlock-Bytes beliebig 0 oder 1 sein, muessen aber stabile TTL-Pegel haben.
+
+
+================================================================================
+ABSCHNITT 2: STEUERLEITUNGEN
+================================================================================
+
+Alle drei Steuerleitungen sind AKTIV LOW (mit # gekennzeichnet).
+
+  CE#  (Chip Enable)    -- Aktiviert den Chip. CE# = HIGH -> Standby.
+  OE#  (Output Enable)  -- Schaltet den Datenbus auf Ausgabe.
+  WE#  (Write Enable)   -- Steuert Schreiboperationen.
+
+Grundregeln fuer die Signalreihenfolge:
+
+  ADRESSE wird gelatcht auf: fallende Flanke von WE# oder CE#,
+                              je nachdem welche ZULETZT faellt.
+
+  DATEN werden gelatcht auf:  steigende Flanke von WE# oder CE#,
+                              je nachdem welche ZUERST steigt.
+
+Empfehlung fuer die Statemachine: WE#-gesteuerte Zyklen verwenden.
+Das bedeutet: CE# bleibt waehrend der gesamten Operationssequenz LOW,
+nur WE# wird pro Bus-Zyklus getoggelt. Das vereinfacht das Timing erheblich.
+
+
+================================================================================
+ABSCHNITT 3: BUSZYKLEN - ATOMARE OPERATIONEN
+================================================================================
+
+Die gesamte Protokolllogik baut auf zwei atomaren Busoperationen auf:
+
+--- 3.1 READ-ZYKLUS ---
+
+  1. CE# auf LOW setzen
+  2. OE# auf LOW setzen
+  3. Adresse anlegen (stabil halten)
+  4. Warten: mindestens TAA = 55 ns (fuer -55 Variante) oder 70 ns (-70)
+  5. Datum von DQ7..DQ0 lesen
+  6. OE# auf HIGH setzen (optional, wenn kein Folge-Zyklus)
+
+  Relevante Timingparameter:
+    TAA  = Address Access Time        = max. 55 ns oder 70 ns
+    TCE  = Chip Enable Access Time    = max. 55 ns oder 70 ns
+    TOE  = Output Enable Access Time  = max. 35 ns (beide Varianten)
+    TOHZ = OE# High to High-Z        = max. 20 ns (-55) / 25 ns (-70)
+
+  Hinweis: Datenbus geht in High-Z wenn OE# = HIGH oder CE# = HIGH.
+
+
+--- 3.2 WRITE-ZYKLUS (WE#-gesteuert, empfohlen) ---
+
+  1. CE# auf LOW halten (bleibt die gesamte Sequenz LOW)
+  2. OE# auf HIGH setzen (Ausgabepuffer deaktivieren)
+  3. Adresse anlegen
+  4. Datum auf DQ7..DQ0 anlegen
+  5. WE# auf LOW ziehen   -- Adresse wird jetzt gelatcht
+  6. WE# Pulsbreite halten: mindestens TWP = 40 ns
+  7. WE# auf HIGH ziehen  -- Datum wird jetzt gelatcht
+  8. WE# HIGH halten: mindestens TWPH = 30 ns vor naechstem Zyklus
+
+  Relevante Timingparameter:
+    TAS  = Address Setup Time vor WE# fallend  = min. 0 ns
+    TAH  = Address Hold Time nach WE# steigend = min. 30 ns
+    TDS  = Data Setup Time vor WE# steigend    = min. 40 ns
+    TDH  = Data Hold Time nach WE# steigend    = min. 0 ns
+    TCS  = CE# Setup Time vor WE# fallend      = min. 0 ns
+    TCH  = CE# Hold Time nach WE# steigend     = min. 0 ns
+    TOES = OE# HIGH Setup vor WE# fallend      = min. 0 ns
+    TOEH = OE# HIGH Hold nach WE# steigend     = min. 10 ns
+    TWP  = WE# Pulse Width LOW                 = min. 40 ns
+    TWPH = WE# Pulse Width HIGH                = min. 30 ns
+
+  WICHTIG: OE# muss HIGH sein bevor WE# faellt (TOES = 0 ns ist das Minimum,
+  aber sicherheitshalber OE# fruehzeitig deaktivieren, bevor Adresse/Daten
+  angelegt werden).
+
+
+================================================================================
+ABSCHNITT 4: SOFTWARE DATA PROTECTION (SDP) -- PFLICHT-PREAMBLE
+================================================================================
+
+Der Chip wird mit PERMANENT AKTIVIERTEM SDP ausgeliefert. SDP kann nicht
+deaktiviert werden. Jede schreibende Operation (Program oder Erase) MUSS
+mit einer Unlock-Sequenz eingeleitet werden. Ohne Unlock-Sequenz wird jeder
+Schreibversuch still ignoriert -- es gibt keine Fehlermeldung.
+
+Ungueltige Kommandos waehrend einer SDP-Sequenz brechen die Sequenz ab und
+versetzen den Chip in den Read-Modus (innerhalb von TRC).
+
+--- 4.1 DREI-BYTE UNLOCK-SEQUENZ (fuer BYTE PROGRAM) ---
+
+  Schritt 1:  WRITE  Adresse=0x5555  Datum=0xAA
+  Schritt 2:  WRITE  Adresse=0x2AAA  Datum=0x55
+  Schritt 3:  WRITE  Adresse=0x5555  Datum=0xA0   <- Kommando: Byte Program
+
+  Danach unmittelbar:
+  Schritt 4:  WRITE  Adresse=<Zieladresse>  Datum=<Datenbyte>
+
+  Die interne Program-Operation startet nach der steigenden Flanke des
+  vierten WE#-Pulses.
+
+
+--- 4.2 SECHS-BYTE UNLOCK-SEQUENZ (fuer ERASE-Operationen) ---
+
+  Schritt 1:  WRITE  Adresse=0x5555  Datum=0xAA
+  Schritt 2:  WRITE  Adresse=0x2AAA  Datum=0x55
+  Schritt 3:  WRITE  Adresse=0x5555  Datum=0x80   <- Setup-Byte Erase
+  Schritt 4:  WRITE  Adresse=0x5555  Datum=0xAA
+  Schritt 5:  WRITE  Adresse=0x2AAA  Datum=0x55
+  Schritt 6:  WRITE  Adresse=<SA>    Datum=0x30   <- Sector Erase
+           ODER
+              WRITE  Adresse=0x5555  Datum=0x10   <- Chip Erase
+
+  Die interne Erase-Operation startet nach der steigenden Flanke des
+  sechsten WE#-Pulses.
+
+
+================================================================================
+ABSCHNITT 5: KOMMANDO-BESCHREIBUNGEN (EINZELN)
+================================================================================
+
+--- 5.1 READ (Normaler Lesemodus) ---
+
+  Voraussetzung: Chip im IDLE/READ-Zustand (kein aktiver Program/Erase).
+
+  Ablauf:
+    1. CE# = LOW
+    2. OE# = LOW
+    3. WE# = HIGH (immer HIGH im Lesemodus)
+    4. Adresse anlegen
+    5. Nach TAA (max. 55/70 ns): Datenbyte von DQ7..DQ0 lesen
+    6. Fuer Folge-Reads: einfach Adresse wechseln, Latenzzeit abwarten
+
+  Besonderheit: Der Datenbus ist High-Z solange CE# = HIGH oder OE# = HIGH.
+  Standby-Strom (CE# = HIGH): typisch 30 uA (CMOS-Pegel), max. 100 uA.
+  Aktiver Strom bei 14 MHz: typisch 10 mA, max. 25 mA.
+
+  Statemachine-Zustand: READ_IDLE
+  Naechster Zustand nach Kommando-Erkennnung: SDP_BYTE1
+
+
+--- 5.2 BYTE PROGRAM ---
+
+  Voraussetzung: Das Zielbyte MUSS sich in einem vorab geloeschten Sektor
+  befinden (= 0xFF). Man kann nur Bits von 1 nach 0 schreiben, niemals
+  von 0 nach 1. Soll ein bereits geschriebenes Byte geaendert werden, muss
+  der gesamte Sektor (4 Kbyte) vorher geloescht werden.
+
+  Vollstaendige Sequenz (4 Write-Zyklen):
+    Zyklus 1:  WRITE  0x5555  0xAA    (SDP Unlock Byte 1)
+    Zyklus 2:  WRITE  0x2AAA  0x55    (SDP Unlock Byte 2)
+    Zyklus 3:  WRITE  0x5555  0xA0    (Program-Kommando)
+    Zyklus 4:  WRITE  <BA>    <DATA>  (Byte-Adresse und Datenbyte)
+
+  Dabei ist <BA> die 17/18/19-Bit-Zieladresse und <DATA> das zu schreibende
+  Byte.
+
+  Interne Operation:
+    - Startet nach der steigenden Flanke des 4. WE#-Pulses
+    - Dauer typisch 14 us, maximal 20 us (TBP = max. 10 us laut AC-Tabelle,
+      Datenblatt-Frontseite nennt 14 us typisch / 20 us maximal)
+    - Waehrend der internen Operation sind nur DQ7-Polling und Toggle-Bit
+      gueltige Reads; alle anderen Write-Kommandos werden ignoriert
+
+  Ende der Operation: via Data# Polling (DQ7) oder Toggle Bit (DQ6) erkennen.
+  Polling ist gueltig ab der steigenden Flanke des 4. WE#-Pulses.
+
+  Statemachine-Zustaende:
+    SDP_BYTE1 -> SDP_BYTE2 -> CMD_PROGRAM -> WRITE_DATA -> WAIT_PROGRAM_DONE
+
+
+--- 5.3 SECTOR ERASE ---
+
+  Loescht einen einzelnen 4-Kbyte-Sektor. Alle Bytes im Sektor werden auf
+  0xFF gesetzt. Die Sektorgrenzen sind uniform und auf 4-Kbyte ausgerichtet:
+    Sektor N beginnt bei Adresse N * 0x1000 und endet bei N * 0x1000 + 0x0FFF.
+
+  Vollstaendige Sequenz (6 Write-Zyklen):
+    Zyklus 1:  WRITE  0x5555  0xAA    (SDP Unlock Byte 1)
+    Zyklus 2:  WRITE  0x2AAA  0x55    (SDP Unlock Byte 2)
+    Zyklus 3:  WRITE  0x5555  0x80    (Erase-Setup)
+    Zyklus 4:  WRITE  0x5555  0xAA    (SDP Unlock Byte 4)
+    Zyklus 5:  WRITE  0x2AAA  0x55    (SDP Unlock Byte 5)
+    Zyklus 6:  WRITE  <SAx>   0x30    (Sector Erase Kommando + Sektoradresse)
+
+  <SAx> ist eine beliebige Adresse INNERHALB des zu loeschenden Sektors.
+  Es werden die Adressbits AMS..A12 fuer die Sektorauswahl verwendet.
+  Die unteren Bits A11..A0 werden ignoriert (koennen beliebig sein).
+
+  Einfachste Praxis: <SAx> = Basisadresse des Sektors (d.h. A11..A0 = 0).
+
+  Interne Operation:
+    - Startet nach der steigenden Flanke des 6. WE#-Pulses
+    - Dauer typisch 18 ms, maximal 25 ms (TSE)
+    - Waehrend der internen Operation nur Toggle-Bit oder Data# Polling lesen
+
+  Polling gueltig ab der steigenden Flanke des 6. WE#-Pulses.
+
+  Statemachine-Zustaende:
+    SDP_BYTE1 -> SDP_BYTE2 -> CMD_ERASE_SETUP ->
+    SDP_BYTE4 -> SDP_BYTE5 -> CMD_SECTOR_ERASE -> WAIT_ERASE_DONE
+
+
+--- 5.4 CHIP ERASE ---
+
+  Loescht den gesamten Speicherinhalt auf 0xFF. Nuetzlich wenn der gesamte
+  Chip schnell neu beschrieben werden soll.
+
+  Vollstaendige Sequenz (6 Write-Zyklen):
+    Zyklus 1:  WRITE  0x5555  0xAA    (SDP Unlock Byte 1)
+    Zyklus 2:  WRITE  0x2AAA  0x55    (SDP Unlock Byte 2)
+    Zyklus 3:  WRITE  0x5555  0x80    (Erase-Setup)
+    Zyklus 4:  WRITE  0x5555  0xAA    (SDP Unlock Byte 4)
+    Zyklus 5:  WRITE  0x2AAA  0x55    (SDP Unlock Byte 5)
+    Zyklus 6:  WRITE  0x5555  0x10    (Chip Erase Kommando)
+
+  Interne Operation:
+    - Startet nach der steigenden Flanke des 6. WE#-Pulses
+    - Dauer:
+        SST39SF010A: typisch 2 Sekunden  (= 32 Sektoren * 18 ms)
+        SST39SF020A: typisch 4 Sekunden  (= 64 Sektoren * 18 ms)
+        SST39SF040:  typisch 8 Sekunden  (= 128 Sektoren * 18 ms)
+    - Maximalwert laut AC-Tabelle: TSCE = 100 ms (dies ist der Maximalwert
+      fuer einen einzelnen internen Chip-Erase-Vorgang, nicht die Rewrite-Zeit)
+    - Nur Toggle-Bit oder Data# Polling sind waehrend der Operation gueltig
+
+  Statemachine-Zustaende:
+    SDP_BYTE1 -> SDP_BYTE2 -> CMD_ERASE_SETUP ->
+    SDP_BYTE4 -> SDP_BYTE5 -> CMD_CHIP_ERASE -> WAIT_ERASE_DONE
+
+
+--- 5.5 SOFTWARE PRODUCT ID ENTRY (Hersteller- und Geraete-ID lesen) ---
+
+  Versetzt den Chip in den ID-Modus, in dem Hersteller-ID und Device-ID
+  ausgelesen werden koennen. Nuetzlich zur Laufzeiterkennung des Chiptyps.
+
+  Entry-Sequenz (3 Write-Zyklen):
+    Zyklus 1:  WRITE  0x5555  0xAA
+    Zyklus 2:  WRITE  0x2AAA  0x55
+    Zyklus 3:  WRITE  0x5555  0x90
+
+  Warten: TIDA = max. 150 ns nach dem letzten WE#-Puls.
+
+  Danach Lesen:
+    READ  Adresse=0x0000  -> Datum = 0xBF  (Microchip Hersteller-ID)
+    READ  Adresse=0x0001  -> Datum = 0xB5  (SST39SF010A Device-ID)
+    READ  Adresse=0x0001  -> Datum = 0xB6  (SST39SF020A Device-ID)
+    READ  Adresse=0x0001  -> Datum = 0xB7  (SST39SF040  Device-ID)
+
+  Hinweis: Fuer den Read der IDs muessen AMS..A1 = 0 sein. A0 = 0 fuer
+  Hersteller-ID, A0 = 1 fuer Device-ID.
+
+  Statemachine-Zustaende:
+    SDP_BYTE1 -> SDP_BYTE2 -> CMD_ID_ENTRY -> ID_MODE (Lesen moeglich)
+
+
+--- 5.6 SOFTWARE PRODUCT ID EXIT / RESET ---
+
+  Beendet den ID-Modus und kehrt zum normalen Read-Modus zurueck.
+  Es gibt zwei gleichwertige Methoden:
+
+  Methode A (1 Write-Zyklus, schnell):
+    WRITE  Adresse=beliebig (XXH)  Datum=0xF0
+
+  Methode B (3 Write-Zyklen, JEDEC-konform):
+    Zyklus 1:  WRITE  0x5555  0xAA
+    Zyklus 2:  WRITE  0x2AAA  0x55
+    Zyklus 3:  WRITE  0x5555  0xF0
+
+  Warten: TIDA = max. 150 ns nach dem letzten WE#-Puls.
+
+  WICHTIG: Der Software-Reset-Befehl wird IGNORIERT wenn eine interne
+  Program- oder Erase-Operation noch laeuft. Erst auf Abschluss warten,
+  dann reset.
+
+  Statemachine-Uebergang: ID_MODE -> IDLE/READ
+
+
+================================================================================
+ABSCHNITT 6: END-OF-WRITE ERKENNUNG (POLLING-METHODEN)
+================================================================================
+
+Nach dem Start einer internen Program- oder Erase-Operation MUSS die
+Software auf den Abschluss warten, bevor eine neue Operation gestartet
+wird. Es gibt zwei Software-Polling-Methoden. BEIDE koennen verwendet
+werden; empfohlen wird Toggle-Bit (DQ6) als primaere Methode.
+
+--- 6.1 TOGGLE BIT (DQ6) -- Empfohlene Methode ---
+
+  Waehrend eine interne Operation (Program oder Erase) aktiv ist:
+    - Aufeinanderfolgende Reads von DQ6 liefern abwechselnd 0 und 1
+      (d.h. DQ6 "togglet" bei jedem Lesezyklus)
+
+  Wenn die Operation abgeschlossen ist:
+    - DQ6 hoert auf zu togeln; zwei aufeinanderfolgende Reads liefern
+      denselben Wert
+
+  Algorithmus fuer die Statemachine:
+    1. Lese Byte an einer beliebigen Adresse (die Zieladresse ist
+       sinnvoll, aber nicht zwingend)
+    2. Speichere den Wert von Bit 6 (DQ6) als "last_dq6"
+    3. Lese dasselbe Byte erneut
+    4. Wenn DQ6 == last_dq6: Operation abgeschlossen -> weiter
+    5. Wenn DQ6 != last_dq6: Operation noch aktiv -> zurueck zu Schritt 2
+
+  Hinweis zur Race Condition: Der Chip-interne Abschluss des Schreibvorgangs
+  ist asynchron zum Lesezyklus. Es ist moeglich, dass genau im Moment des
+  Abschlusses ein Lesevorgang stattfindet, der ein falsches "fertig" signalisiert.
+  Um Fehlinterpretationen zu vermeiden:
+    -> Nach positivem Ergebnis (kein Toggle erkannt) NOCHMALS zwei Reads
+       durchfuehren und pruefen. Nur wenn BEIDE konsistent sind, gilt die
+       Operation als wirklich abgeschlossen.
+
+  Gueltigkeit: ab der steigenden Flanke des 4. WE#-Pulses (Program)
+               bzw. des 6. WE#-Pulses (Erase).
+
+  Erster Ausgabewert: DQ6 ist nach dem Start IMMER zuerst HIGH (1).
+
+
+--- 6.2 DATA# POLLING (DQ7) -- Alternative Methode ---
+
+  Waehrend Program-Operation:
+    - Read von DQ7 an der Programm-Zieladresse liefert das KOMPLEMENT
+      des tatsaechlichen Datenbits DQ7
+    - Wenn die Operation abgeschlossen ist, liefert DQ7 den ECHTEN Wert
+
+  Waehrend Erase-Operation:
+    - Read von DQ7 liefert 0 (LOW) solange Erase laeuft
+    - Nach Abschluss liefert DQ7 = 1 (HIGH), da alle Bits auf 0xFF gesetzt
+
+  Algorithmus fuer die Statemachine (Program):
+    1. Lese Byte an der Zieladresse (die Adresse, an die programmiert wurde)
+    2. Vergleiche DQ7 mit dem Soll-DQ7 des geschriebenen Datenbytes
+    3. Wenn DQ7 == Soll-DQ7: Operation moeglicherweise abgeschlossen
+    4. Nochmals lesen: Wenn DQ7 erneut == Soll-DQ7: fertig
+    5. Wenn DQ7 != Soll-DQ7: noch aktiv -> zurueck zu Schritt 1
+
+  Algorithmus fuer Erase:
+    1. Lese Byte an beliebiger Adresse im geloeschten Bereich
+    2. Wenn DQ7 == 1: Erase abgeschlossen (alle Bits = 1)
+    3. Wenn DQ7 == 0: noch aktiv -> wiederholen
+
+  Einschraenkung: Nach Abschluss koennen die Bits DQ6..DQ0 an der
+  abgefragten Adresse noch ungueltig sein. Erst nach 1 us nach
+  Abschluss sind alle 8 Datenbits bei Read gueltig.
+
+  Gueltigkeit: ab der steigenden Flanke des 4. WE#-Pulses (Program)
+               bzw. des 6. WE#-Pulses (Erase).
+
+
+================================================================================
+ABSCHNITT 7: HARDWARE-DATENSCHUTZ (informativ)
+================================================================================
+
+Der Chip hat drei Hardware-Schutzmechanismen, die keine Software-Aktion
+erfordern, aber in der Statemachine beruecksichtigt werden sollten:
+
+  1. Glitch-Schutz: WE#- oder CE#-Pulse kuenzer als 5 ns starten
+     keinen Write-Zyklus. Kein Handlungsbedarf, aber erklaert warum
+     kurze Stoerimpulse keine Datenkorrtuption verursachen.
+
+  2. VDD Power-Up/Down Schutz: Write-Operationen sind gesperrt solange
+     VDD < 2.5V. Der Chip benoetigt nach Power-Up mindestens 100 us bevor
+     Read- oder Write-Operationen durchgefuehrt werden duerfen:
+       TPU-READ  = min. 100 us nach Power-Up vor erstem Read
+       TPU-WRITE = min. 100 us nach Power-Up vor erstem Program/Erase
+     Diese Verzoegerung muss die Statemachine im INIT-Zustand einhalten.
+
+  3. Write Inhibit Mode: Wenn OE# = LOW oder CE# = HIGH oder WE# = HIGH,
+     wird kein Write ausgefuehrt. Schuetzt gegen unbeabsichtigte Writes
+     beim Einschalten.
+
+
+================================================================================
+ABSCHNITT 8: VOLLSTAENDIGE TIMING-TABELLEN FUER DIE STATEMACHINE
+================================================================================
+
+--- 8.1 READ-Timing ---
+
+  Parameter         Beschreibung                        -55 Variante  -70 Variante
+  ---------------------------------------------------------------------------------
+  TRC               Read Cycle Time (min)               55 ns         70 ns
+  TAA               Address Access Time (max)           55 ns         70 ns
+  TCE               CE# Low to valid Output (max)       55 ns         70 ns
+  TOE               OE# Low to valid Output (max)       35 ns         35 ns
+  TCHZ              CE# High to High-Z (max)            20 ns         25 ns
+  TOHZ              OE# High to High-Z (max)            20 ns         25 ns
+
+
+--- 8.2 WRITE/PROGRAM/ERASE-Timing ---
+
+  Parameter         Beschreibung                        Minimum   Maximum   Einheit
+  ----------------------------------------------------------------------------------
+  TBP               Byte Program Time                   -         10        us
+  TAS               Address Setup vor WE# fallend       0         -         ns
+  TAH               Address Hold nach WE# steigend      30        -         ns
+  TCS               CE#/WE# Setup Time                  0         -         ns
+  TCH               CE#/WE# Hold Time                   0         -         ns
+  TOES              OE# High Setup vor WE# fallend      0         -         ns
+  TOEH              OE# High Hold nach WE# steigend     10        -         ns
+  TCP               CE# Pulse Width LOW                 40        -         ns
+  TWP               WE# Pulse Width LOW                 40        -         ns
+  TWPH              WE# Pulse Width HIGH                30        -         ns
+  TDS               Data Setup vor WE# steigend         40        -         ns
+  TDH               Data Hold nach WE# steigend         0         -         ns
+  TIDA              Software ID Entry/Exit Time         -         150       ns
+  TSE               Sector Erase Time                   -         25        ms
+  TSCE              Chip Erase Time                     -         100       ms
+
+
+--- 8.3 Empfohlene Wait States fuer die Statemachine ---
+
+  Folgende Wartezeiten sollte die Statemachine als konfigurierbare
+  Konstanten bereitstellen:
+
+  WAIT_POWER_UP          = 100 us   (nach VDD stabil, vor erster Operation)
+  WAIT_WRITE_CYCLE       = 50 ns    (Minimalabstand zwischen zwei Bus-Zyklen,
+                                     ergibt sich aus TWPH = 30 ns + Sicherheit)
+  WAIT_ADDRESS_HOLD      = 30 ns    (TAH, nach WE# steigend)
+  WAIT_DATA_SETUP        = 40 ns    (TDS, Datum vor WE# steigend stabil)
+  WAIT_OE_HOLD           = 10 ns    (TOEH, OE# bleibt nach WE# noch 10 ns HIGH)
+  WAIT_ID_MODE           = 150 ns   (TIDA, nach ID-Entry oder Exit)
+  WAIT_POLL_INTERVAL     = 1 us     (Mindestabstand zwischen Polling-Reads)
+  TIMEOUT_BYTE_PROGRAM   = 50 us    (5x TBP_max als Timeout-Grenze)
+  TIMEOUT_SECTOR_ERASE   = 50 ms    (2x TSE_max als Timeout-Grenze)
+  TIMEOUT_CHIP_ERASE     = 250 ms   (2.5x TSCE_max als Timeout-Grenze)
+
+  Hinweis zu Timeouts: Das Datenblatt garantiert Festzeiten unabhaengig von
+  der Anzahl bisheriger Erase/Program-Zyklen (SuperFlash-Eigenschaft).
+  Timeouts sind dennoch als Sicherheitsnetz sinnvoll, da Hardwarefehler
+  (z.B. defekte Zelle) zu hängenden Poll-Schleifen fuehren koennen.
+
+
+================================================================================
+ABSCHNITT 9: STATEMACHINE-ZUSTANDSBESCHREIBUNG
+================================================================================
+
+Die folgende Aufzaehlung beschreibt alle empfohlenen Zustaende fuer eine
+vollstaendige Statemachine-Implementierung.
+
+--- ZUSTAND: INIT ---
+  Einstiegszustand nach Power-Up oder Reset.
+  Aktion: Warte WAIT_POWER_UP (100 us).
+  Naechster Zustand: IDLE
+
+--- ZUSTAND: IDLE (= normaler Lesemodus) ---
+  Der Chip befindet sich im Read-Modus. Reads koennen jederzeit ausgefuehrt
+  werden. Warte auf Anforderung einer Operation.
+  Eingaenge: Lese-Anforderung, Program-Anforderung, Erase-Anforderung,
+             ID-Anforderung
+  Uebergaenge:
+    Lese-Anforderung     -> READ_EXEC
+    Program-Anforderung  -> PRG_SDP1
+    Erase-Anforderung    -> ERS_SDP1
+    ID-Anforderung       -> ID_SDP1
+
+--- ZUSTAND: READ_EXEC ---
+  Fuehre einen oder mehrere Read-Zyklen aus (burst moeglich).
+  Aktion: CE# LOW, OE# LOW, Adresse anlegen, nach TAA Datum lesen.
+  Naechster Zustand: IDLE (nach Abschluss)
+
+--- ZUSTAND: PRG_SDP1 ---
+  Erster Byte der 3-Byte-Unlock-Sequenz fuer Byte Program.
+  Aktion: WRITE 0x5555 <- 0xAA
+  Naechster Zustand: PRG_SDP2
+
+--- ZUSTAND: PRG_SDP2 ---
+  Zweiter Byte der Unlock-Sequenz.
+  Aktion: WRITE 0x2AAA <- 0x55
+  Naechster Zustand: PRG_CMD
+
+--- ZUSTAND: PRG_CMD ---
+  Sende Program-Kommando-Byte.
+  Aktion: WRITE 0x5555 <- 0xA0
+  Naechster Zustand: PRG_DATA
+
+--- ZUSTAND: PRG_DATA ---
+  Sende Zieladresse und Datenbyte.
+  Aktion: WRITE <Byte-Adresse> <- <Datenbyte>
+  Naechster Zustand: PRG_WAIT
+
+--- ZUSTAND: PRG_WAIT ---
+  Warte auf Abschluss der internen Program-Operation via Polling.
+  Aktion: Wiederhole Toggle-Bit oder DQ7-Polling (siehe Abschnitt 6).
+          Bei Timeout (TIMEOUT_BYTE_PROGRAM): -> ERROR
+  Naechster Zustand bei Erfolg: IDLE
+  Naechster Zustand bei Timeout: ERROR
+
+--- ZUSTAND: ERS_SDP1 ---
+  Erster Byte der 6-Byte-Unlock-Sequenz fuer Erase.
+  Aktion: WRITE 0x5555 <- 0xAA
+  Naechster Zustand: ERS_SDP2
+
+--- ZUSTAND: ERS_SDP2 ---
+  Aktion: WRITE 0x2AAA <- 0x55
+  Naechster Zustand: ERS_SETUP
+
+--- ZUSTAND: ERS_SETUP ---
+  Erase-Setup-Byte.
+  Aktion: WRITE 0x5555 <- 0x80
+  Naechster Zustand: ERS_SDP4
+
+--- ZUSTAND: ERS_SDP4 ---
+  Aktion: WRITE 0x5555 <- 0xAA
+  Naechster Zustand: ERS_SDP5
+
+--- ZUSTAND: ERS_SDP5 ---
+  Aktion: WRITE 0x2AAA <- 0x55
+  Naechster Zustand: ERS_CMD
+
+--- ZUSTAND: ERS_CMD ---
+  Sende Erase-Kommando: Sector oder Chip Erase.
+  Aktion (Sector): WRITE <Sektoradresse> <- 0x30
+  Aktion (Chip):   WRITE 0x5555          <- 0x10
+  Naechster Zustand: ERS_WAIT
+
+--- ZUSTAND: ERS_WAIT ---
+  Warte auf Abschluss der internen Erase-Operation.
+  Aktion: Toggle-Bit oder DQ7-Polling.
+          Bei Timeout: -> ERROR
+  Naechster Zustand bei Erfolg: IDLE
+  Naechster Zustand bei Timeout: ERROR
+
+--- ZUSTAND: ID_SDP1 ---
+  Starte ID-Entry-Sequenz.
+  Aktion: WRITE 0x5555 <- 0xAA
+  Naechster Zustand: ID_SDP2
+
+--- ZUSTAND: ID_SDP2 ---
+  Aktion: WRITE 0x2AAA <- 0x55
+  Naechster Zustand: ID_CMD
+
+--- ZUSTAND: ID_CMD ---
+  Aktion: WRITE 0x5555 <- 0x90
+  Warte TIDA (150 ns).
+  Naechster Zustand: ID_READ
+
+--- ZUSTAND: ID_READ ---
+  Lese Hersteller-ID und Device-ID.
+  Aktion: READ 0x0000 -> Hersteller-ID (erwartet: 0xBF)
+          READ 0x0001 -> Device-ID (0xB5 / 0xB6 / 0xB7)
+  Naechster Zustand: ID_EXIT
+
+--- ZUSTAND: ID_EXIT ---
+  Beende ID-Modus (Methode A: 1 Zyklus).
+  Aktion: WRITE beliebige Adresse <- 0xF0
+  Warte TIDA (150 ns).
+  Naechster Zustand: IDLE
+
+--- ZUSTAND: ERROR ---
+  Fehler erkannt (Timeout, unerwarteter Polling-Wert, o.ae.).
+  Aktion: Fehler loggen. Optional: Reset-Versuch via ID_EXIT-Methode A.
+  Naechster Zustand: IDLE (nach Reset-Versuch) oder FAULT (wenn Recovery
+  nicht moeglich)
+
+
+================================================================================
+ABSCHNITT 10: WICHTIGE REGELN UND FALLSTRICKE
+================================================================================
+
+  1. ERASE VOR PROGRAM PFLICHT
+     Man kann nur Bits von 1 -> 0 programmieren, nicht von 0 -> 1.
+     Jeder Sektor muss vor dem erneuten Beschreiben geloescht werden.
+     Vor dem Program-Befehl muss die Software sicherstellen, dass der
+     Ziel-Sektor den Wert 0xFF enthaelt (oder gezielt geloescht wurde).
+
+  2. SDP-SEQUENZ DARF NICHT UNTERBROCHEN WERDEN
+     Zwischen den einzelnen Bytes der SDP-Sequenz duerfen keine anderen
+     Bus-Operationen stattfinden (kein Read, kein anderes Write).
+     Eine Unterbrechung bricht die Sequenz ab; der Chip kehrt in den
+     Read-Modus zurueck.
+
+  3. KEINE WRITES WAEHREND INTERNER OPERATION
+     Waehrend eine interne Program- oder Erase-Operation laeuft, werden
+     alle Write-Kommandos vom Chip ignoriert. Die Statemachine MUSS auf
+     das Ende der Operation warten (Polling) bevor neue Kommandos gesendet
+     werden.
+
+  4. DQ6/DQ7 RACE CONDITION
+     Das Ende einer internen Operation ist asynchron. Nach dem ersten
+     Erkennen eines "fertig"-Signals (Toggle-Bit stoppt, DQ7 = erwartet)
+     MUSS mindestens ein weiterer Lese-Zyklus folgen, um sicherzustellen
+     dass das Signal stabil ist und nicht gerade im Uebergang war.
+
+  5. 1 US NACH PROGRAMM-ABSCHLUSS
+     Unmittelbar nach Abschluss einer Program-Operation koennen DQ6..DQ0
+     noch ungueltige Werte liefern. Erst nach 1 us sind alle 8 Datenbits
+     bei einem Read gueltig. Die Statemachine sollte nach PRG_WAIT vor
+     einem Verify-Read 1 us warten.
+
+  6. ADRESSBITS AMS..A15 IN SDP-SEQUENZ
+     Diese Bits duerfen waehrend der SDP-Sequenz nur VIL (LOW) oder VIH
+     (HIGH) sein -- also kein Floating, kein Tristate, keine anderen
+     Spannungswerte.
+
+  7. CHIP-REWRITE-ZEITEN SIND ADDITIV
+     Der Chip-Erase (TSCE max. 100 ms) beinhaltet nur den Erase-Vorgang.
+     Die Gesamtzeit fuer ein vollstaendiges Chip-Rewrite (Erase + Program
+     aller Bytes) betraegt laut Datenblatt:
+       SST39SF010A: 2 Sekunden typisch
+       SST39SF020A: 4 Sekunden typisch
+       SST39SF040:  8 Sekunden typisch
+
+  8. RESET-BEFEHL WAEHREND ERASE/PROGRAM WIRKUNGSLOS
+     Der Software-Reset (0xF0) wird ignoriert, solange eine interne
+     Operation laeuft. Erst nach Abschluss der Operation (via Polling
+     bestaetigt) kann der Reset-Befehl gesendet werden.
+
+  9. NACH POWER-UP 100 US WARTEN
+     Vor der ersten Read- oder Write-Operation nach dem Einschalten
+     (oder nach einem Reset) muessen mindestens 100 us gewartet werden.
+
+ 10. SECTOR-ADRESSE BEI SECTOR ERASE
+     Fuer den Sector-Erase-Befehl kann jede Adresse innerhalb des
+     Zielsektors verwendet werden. Die Statemachine berechnet am
+     einfachsten: Sektor-Basisadresse = (Byte-Adresse) AND 0xFFFFF000
+     (d.h. untere 12 Bits auf 0 setzen).
+
+
+================================================================================
+ABSCHNITT 11: KOMMANDO-REFERENZ (KOMPAKTTABELLE)
+================================================================================
+
+Kommando          Zyklen  Sequenz (Adresse / Datum)
+----------------------------------------------------------------------
+Byte Program      4       5555/AA, 2AAA/55, 5555/A0, BA/DATA
+Sector Erase      6       5555/AA, 2AAA/55, 5555/80, 5555/AA, 2AAA/55, SAx/30
+Chip Erase        6       5555/AA, 2AAA/55, 5555/80, 5555/AA, 2AAA/55, 5555/10
+Software ID Entry 3       5555/AA, 2AAA/55, 5555/90  [dann TIDA warten]
+Software ID Exit  1       XX/F0
+Software ID Exit  3       5555/AA, 2AAA/55, 5555/F0  [dann TIDA warten]
+
+Legende:
+  5555, 2AAA = SDP-Schluessel-Adressen (hex), Bits AMS..A15 beliebig
+  AA, 55, A0, 80, 30, 10, 90, F0 = Kommando-/Datenbytes (hex)
+  BA   = Byte-Adresse der Zielzelle
+  DATA = zu schreibendes Datenbyte
+  SAx  = beliebige Adresse innerhalb des Zielsektors
+  XX   = beliebige Adresse
+
+
+================================================================================
+ABSCHNITT 12: PRODUKT-ID-TABELLE
+================================================================================
+
+  Adresse  Datum  Bedeutung
+  ------   -----  --------------------------------------------------
+  0x0000   0xBF   Hersteller-ID: Microchip Technology (ehemals SST)
+  0x0001   0xB5   Device-ID: SST39SF010A (1 Mbit)
+  0x0001   0xB6   Device-ID: SST39SF020A (2 Mbit)
+  0x0001   0xB7   Device-ID: SST39SF040  (4 Mbit)
+
+  Diese Werte werden nur im ID-Mode ausgegeben (nach Software ID Entry).
+  Im normalen Read-Mode liefern diese Adressen den normalen Speicherinhalt.
+
+
+================================================================================
+ENDE DES DOKUMENTS
+Quelle: Microchip DS20005022F, Mai 2025
+================================================================================
