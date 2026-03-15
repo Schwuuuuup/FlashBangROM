@@ -81,6 +81,10 @@ Progress log:
 - 2026-03-15: Added GitHub tag-release workflow (`.github/workflows/release.yml`) to build firmware, run host tests, upload firmware artifact, and create GitHub release notes on `v*` tags.
 - 2026-03-15: Added ignore rules for generated host verify report files to keep working tree clean during normal usage.
 - 2026-03-15: Validation after release-workflow prep: `cargo test` passed (8/8), `pio run` passed.
+- 2026-03-15: Configured GitHub remote (`origin`) and published local repository to `https://github.com/Schwuuuuup/FlashBangROM.git`.
+- 2026-03-15: Resolved non-fast-forward push by replacing remote `main` with local history as requested (`--force-with-lease`), then pushed tag `v0.1.0`.
+- 2026-03-15: Local `main` now tracks `origin/main`; CI/release workflows are now active on GitHub.
+- 2026-03-15: Cleaned up obsolete remote branch `copilot/extend-flashbang-system-features`; only `origin/main` remains.
 
 ## M2 - Firmware Command Engine (SST39)
 Status: In Progress
@@ -135,4 +139,4 @@ Deliverables:
 5. Add detailed BluePill hardware modification steps with photo placeholders and checklist.
 6. **GUI demo available now**: `cargo run` (or `cargo run -- --gui`) launches a native desktop preview without hardware.
 7. Optional fallback demo: `cargo run -- --demo` launches the terminal UI preview.
-8. Configure GitHub remote (`origin`) and push `main` + tags to activate CI/release workflows remotely.
+8. Confirm first GitHub release generation from tag `v0.1.0` and review workflow artifacts.
