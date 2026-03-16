@@ -183,6 +183,11 @@ This file is the single source of truth for long-term project direction, durable
 - GitHub release publishing is desired and should stay tag-driven.
 - GUI work is allowed to progress in mock/demo mode before full hardware integration is finished.
 - Chip descriptors in `drivers/` are the canonical registry for supported IDs/capabilities, while firmware currently uses compile-time probe routines; runtime YAML parsing on MCU is not part of the current baseline.
+- Terminology is now fixed project-wide for UI/Docs/Protocol labels:
+	- Chip read operations might be called `Dump` - a better Term should be found. "Load" is reserved for File-Operations
+	- Chip write/program operations must be called `Flash`. "Write" is ambiguous and should be avoided in user-facing wording.
+	- File transfer terms `Load` and `Save` are reserved for opening and storing data in files on the Computer running the application
+	- `Upload`/`Download` are easily confused with loading/storing data from/to internet servers and should be avoided in user-facing wording.
 
 ## Insights For Future Sessions
 - Early GUI and protocol work did not need permanent hardware access; the mock-device path was useful and should be preserved.
