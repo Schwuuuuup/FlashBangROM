@@ -50,3 +50,25 @@ FlashBang is a modular ROM flashing system for parallel NOR chips.
 
 ## Project Rule
 All progress and decisions must be documented in `docs/MASTERPLAN.md`.
+
+---
+
+## AI Disclaimer
+
+This project was made possible with massive AI assistance (GitHub Copilot / Claude / ChatGPT).
+Without it, this would have taken a hobbyist significantly longer — or simply never happened.
+
+**Context:** This is a one-man hobby project.
+No jobs were threatened by the use of AI.
+It was used purely to save time and to bridge knowledge gaps in areas like Rust GUI, STM32 peripheral details, and flash chip protocols.
+
+**Safety:** This software should **not** be used in any safety-critical environment.
+Use it at your own risk.
+No guarantees are made regarding correctness, reliability, or fitness for any particular purpose.
+
+**Security:** The GUI application is written in Rust.
+Beyond that, no special security measures have been taken.
+Yes, this confirms every preconception Rust sceptics have — but this is not a kernel module.
+
+**Human contributions are very welcome.**
+If you have licence-free drop-in replacements for any code or assets (icons, fonts, protocol implementations, chip driver definitions, …), feel free to open a pull request or send them in.
