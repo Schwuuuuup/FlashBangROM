@@ -120,10 +120,15 @@ Untere Zeile
 ```
 
 Die Layout-Breite wird dynamisch aufgeteilt:
-- Mittlere Transfer-Spalte startet bei `206.0` und schrumpft bei engen Fenstern.
+- Mittlere Transfer-Spalte ist kompakt auf Zielbreite `150.0` ausgelegt (120px Buttons plus Rand/Padding) und schrumpft nur bei sehr engen Fenstern.
 - Linke und rechte Seite teilen den Rest gleichmaessig (`side_width`, 50/50).
 - Hex-Zellen sind absichtlich kompakt gerendert, damit beide Panels sichtbar bleiben.
 - Die Gesamtgeometrie bleibt responsive, ohne Ueberlappungen oder horizontales Ueberlaufen.
+
+Panel-Struktur (analog zur HTML-Skizze):
+- Linke Spalte: Inspector oben, Chip-Operationsbuttons direkt darunter, gleiche Spaltenbreite.
+- Mitte: Transfer-Buttons (Copy/Flash) in eigener, schmaler Spalte.
+- Rechte Spalte: Workbench oben, Disk-Operationsbuttons direkt darunter, gleiche Spaltenbreite.
 
 ## 2.2.3 Bedien-Skizze fuer Datenfluss
 

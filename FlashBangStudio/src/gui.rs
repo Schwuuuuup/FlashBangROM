@@ -1539,31 +1539,153 @@ impl FlashBangGuiApp {
 
         let available_width = ui.available_width();
         let available_height = ui.available_height();
-        let min_side_width = 280.0;
-        let mut transfer_col_width = 206.0;
         let spacing_x = ui.spacing().item_spacing.x;
-        let required_width = (min_side_width * 2.0) + transfer_col_width + (spacing_x * 2.0);
-        if available_width < required_width {
-            let max_transfer = (available_width - (min_side_width * 2.0) - (spacing_x * 2.0)).max(120.0);
-            transfer_col_width = transfer_col_width.min(max_transfer);
-        }
-        let side_width = ((available_width - transfer_col_width - spacing_x * 2.0) / 2.0).max(120.0);
-        let top_height = available_height * 0.75;
+        const TRANSFER_BUTTON_WIDTH: f32 = 120.0;
+        const TRANSFER_COL_TARGET_WIDTH: f32 = 150.0;
+        const MIN_SIDE_WIDTH: f32 = 120.0;
+        const PANEL_GAP_Y: f32 = 6.0;
+
+        let max_transfer = (available_width - (MIN_SIDE_WIDTH * 2.0) - (spacing_x * 2.0))
+            .max(TRANSFER_BUTTON_WIDTH);
+        let transfer_col_width = TRANSFER_COL_TARGET_WIDTH.min(max_transfer);
+        let side_width = ((available_width - transfer_col_width - spacing_x * 2.0) / 2.0)
+            .max(MIN_SIDE_WIDTH);
+        let top_height = (available_height * 0.75).max(120.0);
+        let lower_height = (available_height - top_height - PANEL_GAP_Y).max(90.0);
         let ctx = ui.ctx().clone();
 
         ui.horizontal_top(|ui| {
             ui.allocate_ui_with_layout(
-                egui::vec2(side_width, top_height),
+                egui::vec2(side_width, available_height),
                 egui::Layout::top_down(egui::Align::Min),
                 |ui| {
-                    ui.group(|ui| {
-                        self.draw_byte_grid(ui, Pane::Inspector, "inspector");
-                    });
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(side_width, top_height),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            ui.group(|ui| {
+                                self.draw_byte_grid(ui, Pane::Inspector, "inspector");
+                            });
+                        },
+                    );
+                    ui.add_space(PANEL_GAP_Y);
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(side_width, lower_height),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            ui.group(|ui| {
+                                ui.horizontal_wrapped(|ui| {
+                                    if self.operation_button(
+                                        ui,
+                                        &ctx,
+                                        "fetch_image",
+                                        ButtonVisualSpec {
+                                            left_base: BaseIcon::Chip,
+                                            left_overlay: None,
+                                            arrow: ArrowIcon::Fetch,
+                                            right_overlay: None,
+                                            right_base: BaseIcon::Inspector,
+                                        },
+                                        "Fetch Image (Chip -> Inspector)",
+                                    ).clicked() {
+                                        if let Some(size) = self.chip_size() {
+                                            if let Err(e) = self.dump_range_to_ro(0, size) {
+                                                self.status = format!("Fetch image failed: {e}");
+                                            }
+                                        }
+                                    }
+                                    if self.operation_button(
+                                        ui,
+                                        &ctx,
+                                        "fetch_range",
+                                        ButtonVisualSpec {
+                                            left_base: BaseIcon::Chip,
+                                            left_overlay: Some(OverlayIcon::Range),
+                                            arrow: ArrowIcon::Fetch,
+                                            right_overlay: Some(OverlayIcon::Range),
+                                            right_base: BaseIcon::Inspector,
+                                        },
+                                        "Fetch Range (Chip+R -> Inspector+R)",
+                                    ).clicked() {
+                                        match self.parse_range_input() {
+                                            Ok((start, len)) => {
+                                                if let Err(e) = self.dump_range_to_ro(start, len) {
+                                                    self.status = format!("Fetch range failed: {e}");
+                                                }
+                                            }
+                                            Err(e) => self.status = format!("Invalid range: {e}"),
+                                        }
+                                    }
+                                    if self.operation_button(
+                                        ui,
+                                        &ctx,
+                                        "fetch_sector",
+                                        ButtonVisualSpec {
+                                            left_base: BaseIcon::Chip,
+                                            left_overlay: Some(OverlayIcon::Sector),
+                                            arrow: ArrowIcon::Fetch,
+                                            right_overlay: Some(OverlayIcon::Sector),
+                                            right_base: BaseIcon::Inspector,
+                                        },
+                                        "Fetch Sector (Chip+S -> Inspector+S)",
+                                    ).clicked() {
+                                        match self.parse_sector_input() {
+                                            Ok((_idx, start, size)) => {
+                                                if let Err(e) = self.dump_range_to_ro(start, size) {
+                                                    self.status = format!("Fetch sector failed: {e}");
+                                                }
+                                            }
+                                            Err(e) => self.status = format!("Invalid sector: {e}"),
+                                        }
+                                    }
+                                    if self.operation_button(
+                                        ui,
+                                        &ctx,
+                                        "erase_image",
+                                        ButtonVisualSpec {
+                                            left_base: BaseIcon::Chip,
+                                            left_overlay: None,
+                                            arrow: ArrowIcon::Erase,
+                                            right_overlay: None,
+                                            right_base: BaseIcon::Trash,
+                                        },
+                                        "Erase Image (Chip -> Trash)",
+                                    ).clicked() {
+                                        if let Err(e) = self.erase_chip() {
+                                            self.status = format!("Erase all failed: {e}");
+                                        }
+                                    }
+                                    if self.operation_button(
+                                        ui,
+                                        &ctx,
+                                        "erase_sector",
+                                        ButtonVisualSpec {
+                                            left_base: BaseIcon::Chip,
+                                            left_overlay: Some(OverlayIcon::Sector),
+                                            arrow: ArrowIcon::Erase,
+                                            right_overlay: None,
+                                            right_base: BaseIcon::Trash,
+                                        },
+                                        "Erase Sector (Chip+S -> Trash)",
+                                    ).clicked() {
+                                        match self.parse_sector_input() {
+                                            Ok((_idx, start, _size)) => {
+                                                if let Err(e) = self.erase_sector(start) {
+                                                    self.status = format!("Erase sector failed: {e}");
+                                                }
+                                            }
+                                            Err(e) => self.status = format!("Invalid sector: {e}"),
+                                        }
+                                    }
+                                });
+                            });
+                        },
+                    );
                 },
             );
 
             ui.allocate_ui_with_layout(
-                egui::vec2(transfer_col_width, top_height),
+                egui::vec2(transfer_col_width, available_height),
                 egui::Layout::top_down(egui::Align::Min),
                 |ui| {
                     ui.group(|ui| {
@@ -1704,254 +1826,140 @@ impl FlashBangGuiApp {
                 },
             );
 
-            // -- Workbench --
             ui.allocate_ui_with_layout(
-                egui::vec2(side_width, top_height),
+                egui::vec2(side_width, available_height),
                 egui::Layout::top_down(egui::Align::Min),
                 |ui| {
-                    ui.group(|ui| {
-                        self.draw_byte_grid(ui, Pane::Workspace, "work");
-                    });
-                },
-            );
-        });
-
-        ui.separator();
-
-        ui.horizontal_top(|ui| {
-            ui.allocate_ui_with_layout(
-                egui::vec2(side_width, 0.0),
-                egui::Layout::top_down(egui::Align::Min),
-                |ui| {
-                    ui.group(|ui| {
-                        ui.horizontal_wrapped(|ui| {
-                            if self.operation_button(
-                                ui,
-                                &ctx,
-                                "fetch_image",
-                                ButtonVisualSpec {
-                                    left_base: BaseIcon::Chip,
-                                    left_overlay: None,
-                                    arrow: ArrowIcon::Fetch,
-                                    right_overlay: None,
-                                    right_base: BaseIcon::Inspector,
-                                },
-                                "Fetch Image (Chip -> Inspector)",
-                            ).clicked() {
-                                if let Some(size) = self.chip_size() {
-                                    if let Err(e) = self.dump_range_to_ro(0, size) {
-                                        self.status = format!("Fetch image failed: {e}");
-                                    }
-                                }
-                            }
-                            if self.operation_button(
-                                ui,
-                                &ctx,
-                                "fetch_range",
-                                ButtonVisualSpec {
-                                    left_base: BaseIcon::Chip,
-                                    left_overlay: Some(OverlayIcon::Range),
-                                    arrow: ArrowIcon::Fetch,
-                                    right_overlay: Some(OverlayIcon::Range),
-                                    right_base: BaseIcon::Inspector,
-                                },
-                                "Fetch Range (Chip+R -> Inspector+R)",
-                            ).clicked() {
-                                match self.parse_range_input() {
-                                    Ok((start, len)) => {
-                                        if let Err(e) = self.dump_range_to_ro(start, len) {
-                                            self.status = format!("Fetch range failed: {e}");
-                                        }
-                                    }
-                                    Err(e) => self.status = format!("Invalid range: {e}"),
-                                }
-                            }
-                            if self.operation_button(
-                                ui,
-                                &ctx,
-                                "fetch_sector",
-                                ButtonVisualSpec {
-                                    left_base: BaseIcon::Chip,
-                                    left_overlay: Some(OverlayIcon::Sector),
-                                    arrow: ArrowIcon::Fetch,
-                                    right_overlay: Some(OverlayIcon::Sector),
-                                    right_base: BaseIcon::Inspector,
-                                },
-                                "Fetch Sector (Chip+S -> Inspector+S)",
-                            ).clicked() {
-                                match self.parse_sector_input() {
-                                    Ok((_idx, start, size)) => {
-                                        if let Err(e) = self.dump_range_to_ro(start, size) {
-                                            self.status = format!("Fetch sector failed: {e}");
-                                        }
-                                    }
-                                    Err(e) => self.status = format!("Invalid sector: {e}"),
-                                }
-                            }
-                            if self.operation_button(
-                                ui,
-                                &ctx,
-                                "erase_image",
-                                ButtonVisualSpec {
-                                    left_base: BaseIcon::Chip,
-                                    left_overlay: None,
-                                    arrow: ArrowIcon::Erase,
-                                    right_overlay: None,
-                                    right_base: BaseIcon::Trash,
-                                },
-                                "Erase Image (Chip -> Trash)",
-                            ).clicked() {
-                                if let Err(e) = self.erase_chip() {
-                                    self.status = format!("Erase all failed: {e}");
-                                }
-                            }
-                            if self.operation_button(
-                                ui,
-                                &ctx,
-                                "erase_sector",
-                                ButtonVisualSpec {
-                                    left_base: BaseIcon::Chip,
-                                    left_overlay: Some(OverlayIcon::Sector),
-                                    arrow: ArrowIcon::Erase,
-                                    right_overlay: None,
-                                    right_base: BaseIcon::Trash,
-                                },
-                                "Erase Sector (Chip+S -> Trash)",
-                            ).clicked() {
-                                match self.parse_sector_input() {
-                                    Ok((_idx, start, _size)) => {
-                                        if let Err(e) = self.erase_sector(start) {
-                                            self.status = format!("Erase sector failed: {e}");
-                                        }
-                                    }
-                                    Err(e) => self.status = format!("Invalid sector: {e}"),
-                                }
-                            }
-                        });
-                    });
-                },
-            );
-
-            ui.allocate_ui(egui::vec2(transfer_col_width, 0.0), |_| {});
-
-            ui.allocate_ui_with_layout(
-                egui::vec2(side_width, 0.0),
-                egui::Layout::top_down(egui::Align::Min),
-                |ui| {
-                    ui.group(|ui| {
-                        ui.horizontal_wrapped(|ui| {
-                            if self.operation_button(
-                                ui,
-                                &ctx,
-                                "load_image",
-                                ButtonVisualSpec {
-                                    left_base: BaseIcon::Disk,
-                                    left_overlay: None,
-                                    arrow: ArrowIcon::Load,
-                                    right_overlay: None,
-                                    right_base: BaseIcon::Workbench,
-                                },
-                                "Load Image (Disk -> Workbench)",
-                            ).clicked() {
-                                if self.choose_open_file() {
-                                    if let Err(e) = self.load_file_into_work(0, None) {
-                                        self.status = e;
-                                    }
-                                } else {
-                                    self.status = "Load cancelled".to_string();
-                                }
-                            }
-                            if self.operation_button(
-                                ui,
-                                &ctx,
-                                "load_sector",
-                                ButtonVisualSpec {
-                                    left_base: BaseIcon::Disk,
-                                    left_overlay: Some(OverlayIcon::Sector),
-                                    arrow: ArrowIcon::Load,
-                                    right_overlay: Some(OverlayIcon::Sector),
-                                    right_base: BaseIcon::Workbench,
-                                },
-                                "Load Sector (Disk+S -> Workbench+S)",
-                            ).clicked() {
-                                if self.choose_open_file() {
-                                    match self.parse_sector_input() {
-                                        Ok((_idx, start, size)) => {
-                                            if let Err(e) = self.load_file_into_work(start, Some(size)) {
-                                                self.status = e;
-                                            }
-                                        }
-                                        Err(e) => self.status = format!("Invalid sector: {e}"),
-                                    }
-                                } else {
-                                    self.status = "Load cancelled".to_string();
-                                }
-                            }
-                            if self.operation_button(
-                                ui,
-                                &ctx,
-                                "save_image",
-                                ButtonVisualSpec {
-                                    left_base: BaseIcon::Workbench,
-                                    left_overlay: None,
-                                    arrow: ArrowIcon::Save,
-                                    right_overlay: None,
-                                    right_base: BaseIcon::Disk,
-                                },
-                                "Save Image (Workbench -> Disk)",
-                            ).clicked() {
-                                if self.file_path_input.trim().is_empty() && !self.choose_save_file("rom_inspector.bin") {
-                                    self.status = "Save cancelled".to_string();
-                                } else {
-                                    let path = PathBuf::from(self.file_path_input.trim());
-                                    if !path.as_os_str().is_empty() {
-                                        if let Some(size) = self.chip_size() {
-                                            if let Err(e) = self.save_work_range_to_file(0, size, &path) {
-                                                self.status = e;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            if self.operation_button(
-                                ui,
-                                &ctx,
-                                "save_sector",
-                                ButtonVisualSpec {
-                                    left_base: BaseIcon::Workbench,
-                                    left_overlay: Some(OverlayIcon::Sector),
-                                    arrow: ArrowIcon::Save,
-                                    right_overlay: Some(OverlayIcon::Sector),
-                                    right_base: BaseIcon::Disk,
-                                },
-                                "Save Sector (Workbench+S -> Disk+S)",
-                            ).clicked() {
-                                match self.parse_sector_input() {
-                                    Ok((_idx, start, size)) => {
-                                        let previous = self.file_path_input.clone();
-                                        let suggested =
-                                            Self::sector_file_path(Path::new(self.file_path_input.trim()), start, size);
-                                        let suggested_name = suggested
-                                            .file_name()
-                                            .and_then(|name| name.to_str())
-                                            .unwrap_or("rom_sector.bin")
-                                            .to_string();
-                                        self.file_path_input = suggested.display().to_string();
-                                        if self.choose_save_file(&suggested_name) {
-                                            let sector_path = PathBuf::from(self.file_path_input.trim());
-                                            if let Err(e) = self.save_work_range_to_file(start, size, &sector_path) {
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(side_width, top_height),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            ui.group(|ui| {
+                                self.draw_byte_grid(ui, Pane::Workspace, "work");
+                            });
+                        },
+                    );
+                    ui.add_space(PANEL_GAP_Y);
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(side_width, lower_height),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            ui.group(|ui| {
+                                ui.horizontal_wrapped(|ui| {
+                                    if self.operation_button(
+                                        ui,
+                                        &ctx,
+                                        "load_image",
+                                        ButtonVisualSpec {
+                                            left_base: BaseIcon::Disk,
+                                            left_overlay: None,
+                                            arrow: ArrowIcon::Load,
+                                            right_overlay: None,
+                                            right_base: BaseIcon::Workbench,
+                                        },
+                                        "Load Image (Disk -> Workbench)",
+                                    ).clicked() {
+                                        if self.choose_open_file() {
+                                            if let Err(e) = self.load_file_into_work(0, None) {
                                                 self.status = e;
                                             }
                                         } else {
-                                            self.file_path_input = previous;
-                                            self.status = "Save cancelled".to_string();
+                                            self.status = "Load cancelled".to_string();
                                         }
                                     }
-                                    Err(e) => self.status = format!("Invalid sector: {e}"),
-                                }
-                            }
-                        });
-                    });
+                                    if self.operation_button(
+                                        ui,
+                                        &ctx,
+                                        "load_sector",
+                                        ButtonVisualSpec {
+                                            left_base: BaseIcon::Disk,
+                                            left_overlay: Some(OverlayIcon::Sector),
+                                            arrow: ArrowIcon::Load,
+                                            right_overlay: Some(OverlayIcon::Sector),
+                                            right_base: BaseIcon::Workbench,
+                                        },
+                                        "Load Sector (Disk+S -> Workbench+S)",
+                                    ).clicked() {
+                                        if self.choose_open_file() {
+                                            match self.parse_sector_input() {
+                                                Ok((_idx, start, size)) => {
+                                                    if let Err(e) = self.load_file_into_work(start, Some(size)) {
+                                                        self.status = e;
+                                                    }
+                                                }
+                                                Err(e) => self.status = format!("Invalid sector: {e}"),
+                                            }
+                                        } else {
+                                            self.status = "Load cancelled".to_string();
+                                        }
+                                    }
+                                    if self.operation_button(
+                                        ui,
+                                        &ctx,
+                                        "save_image",
+                                        ButtonVisualSpec {
+                                            left_base: BaseIcon::Workbench,
+                                            left_overlay: None,
+                                            arrow: ArrowIcon::Save,
+                                            right_overlay: None,
+                                            right_base: BaseIcon::Disk,
+                                        },
+                                        "Save Image (Workbench -> Disk)",
+                                    ).clicked() {
+                                        if self.file_path_input.trim().is_empty() && !self.choose_save_file("rom_inspector.bin") {
+                                            self.status = "Save cancelled".to_string();
+                                        } else {
+                                            let path = PathBuf::from(self.file_path_input.trim());
+                                            if !path.as_os_str().is_empty() {
+                                                if let Some(size) = self.chip_size() {
+                                                    if let Err(e) = self.save_work_range_to_file(0, size, &path) {
+                                                        self.status = e;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    if self.operation_button(
+                                        ui,
+                                        &ctx,
+                                        "save_sector",
+                                        ButtonVisualSpec {
+                                            left_base: BaseIcon::Workbench,
+                                            left_overlay: Some(OverlayIcon::Sector),
+                                            arrow: ArrowIcon::Save,
+                                            right_overlay: Some(OverlayIcon::Sector),
+                                            right_base: BaseIcon::Disk,
+                                        },
+                                        "Save Sector (Workbench+S -> Disk+S)",
+                                    ).clicked() {
+                                        match self.parse_sector_input() {
+                                            Ok((_idx, start, size)) => {
+                                                let previous = self.file_path_input.clone();
+                                                let suggested =
+                                                    Self::sector_file_path(Path::new(self.file_path_input.trim()), start, size);
+                                                let suggested_name = suggested
+                                                    .file_name()
+                                                    .and_then(|name| name.to_str())
+                                                    .unwrap_or("rom_sector.bin")
+                                                    .to_string();
+                                                self.file_path_input = suggested.display().to_string();
+                                                if self.choose_save_file(&suggested_name) {
+                                                    let sector_path = PathBuf::from(self.file_path_input.trim());
+                                                    if let Err(e) = self.save_work_range_to_file(start, size, &sector_path) {
+                                                        self.status = e;
+                                                    }
+                                                } else {
+                                                    self.file_path_input = previous;
+                                                    self.status = "Save cancelled".to_string();
+                                                }
+                                            }
+                                            Err(e) => self.status = format!("Invalid sector: {e}"),
+                                        }
+                                    }
+                                });
+                            });
+                        },
+                    );
                 },
             );
         });
