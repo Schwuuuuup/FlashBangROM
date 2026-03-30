@@ -1,10 +1,10 @@
 # Rust
-host/studio/target/
+FlashBangStudio/target/
 
 # PlatformIO
-firmware/.pio/
-firmware/.pioenvs/
-firmware/.piolibdeps/
+FlashBangFirmware/.pio/
+FlashBangFirmware/.pioenvs/
+FlashBangFirmware/.piolibdeps/
 
 # Editors/OS
 .vscode/
@@ -18,14 +18,14 @@ firmware/.piolibdeps/
 *.log
 
 # Firmware artifacts
-firmware/.pio/build/
-firmware/*.bin
-firmware/*.elf
-firmware/include/generated_build_info.h
+FlashBangFirmware/.pio/build/
+FlashBangFirmware/*.bin
+FlashBangFirmware/*.elf
+FlashBangFirmware/include/generated_build_info.h
 
 # Host generated reports
-host/studio/flashbang-verify-report.txt
-host/studio/flashbang-verify-report.json
+FlashBangStudio/flashbang-verify-report.txt
+FlashBangStudio/flashbang-verify-report.json
 
 # Python
 __pycache__/
@@ -33,4 +33,4 @@ __pycache__/
 
 #Test-Data
 captures/
-host/studio/Cargo.lock
+FlashBangStudio/Cargo.lock

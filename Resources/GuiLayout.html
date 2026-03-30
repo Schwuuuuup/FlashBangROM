@@ -1,0 +1,340 @@
+<!--
+PRÄZISE GUI-BESCHREIBUNG
+
+GESAMTSTRUKTUR
+Die Anwendung besteht aus vier vertikalen Hauptbereichen:
+1. Topbar (Infoleiste)
+2. Oberer Arbeitsbereich
+3. Horizontaler Splitter (verschiebbar)
+4. Serial Monitor (Logbereich)
+
+Die gesamte GUI nutzt ein flexibles Layout (Flexbox), das sich vollständig an die Fenstergröße anpasst.
+
+----------------------------------------
+TOPBAR (P)
+- Position: ganz oben
+- Höhe: minimal (nur so hoch wie notwendig für Inhalte)
+- Inhalt:
+  - Menübuttons (z. B. File, Edit)
+  - Dropdowns (Device, Port etc.)
+- Verhalten:
+  - feste Höhe (flex-shrink: 0)
+  - keine Skalierung
+
+----------------------------------------
+OBERER BEREICH
+Besteht aus zwei vertikalen Unterbereichen:
+1. Workspace (R | G | B)
+2. Untere Button-Reihe (Y | C)
+
+----------------------------------------
+WORKSPACE (R | G | B)
+Horizontale Aufteilung in drei Spalten:
+
+1. Inspector (R)
+   - links
+   - nimmt 50% des verfügbaren Restplatzes ein
+   - scrollbar (overflow: auto)
+   - Inhalt: Hex-Viewer (mehrzeilig, monospace)
+
+2. Transfer Buttons (G)
+   - mittig
+   - feste Breite (abhängig von Buttons, nicht flexibel)
+   - vertikal gestapelt
+   - Buttons:
+     - Copy
+     - Flash
+   - zentriert ausgerichtet
+
+3. Workbench (B)
+   - rechts
+   - nimmt die restlichen 50% ein
+   - scrollbar
+   - identisches Verhalten wie Inspector
+
+WICHTIG:
+- Inspector und Workbench teilen sich den verfügbaren Platz exakt 50/50
+- Transfer-Spalte reduziert nur den verfügbaren Gesamtplatz, wächst aber nicht
+- Gesamtbreite überschreitet niemals die Fensterbreite
+
+----------------------------------------
+UNTERE BUTTON-REIHE (Y | C)
+- Position: unterhalb des Workspaces
+- Aufteilung:
+  - links: Chip-Buttons (Fetch, Erase)
+  - rechts: File-Buttons (Load, Save)
+- Buttons:
+  - feste Größe: 120x40 px
+- Layout:
+  - links und rechts jeweils gruppiert
+  - maximaler Abstand zwischen beiden Gruppen
+
+----------------------------------------
+SPLITTER
+- Position: zwischen oberem Bereich und Serial Monitor
+- Höhe: ~6px
+- Verhalten:
+  - mit Maus vertikal verschiebbar
+  - verändert die Höhe des oberen Bereichs
+  - Serial Monitor passt sich automatisch an
+- Einschränkungen:
+  - Minimalhöhe oben und unten (z. B. 100px)
+
+----------------------------------------
+SERIAL MONITOR (S)
+- Position: unterhalb des Splitters
+- Verhalten:
+  - füllt den verbleibenden Platz
+  - scrollbar (overflow: auto)
+  - passt sich dynamisch an beim Verschieben des Splitters
+
+- Inhalt:
+  - fortlaufender Log (ähnlich Terminal)
+  - zwei Typen von Einträgen:
+    - TX (gesendet): rot
+    - RX (empfangen): grün
+
+- Darstellung:
+  - monospace
+  - zeilenbasiert
+
+----------------------------------------
+HEX-VIEWER (Inspector & Workbench)
+- Darstellung:
+  - feste Zeichenbreite (monospace)
+  - pro Zeile mehrere Bytes (z. B. "FF AA 01 ...")
+- Verhalten:
+  - vertikal scrollbar
+  - Inhalt größer als sichtbarer Bereich
+
+----------------------------------------
+ALLGEMEINES VERHALTEN
+- gesamte GUI ist responsiv
+- keine Überlappungen
+- alle scrollbaren Bereiche funktionieren unabhängig voneinander
+- Layout basiert vollständig auf Flexbox
+- keine festen Höhen außer:
+  - Topbar
+  - Buttons
+  - Splitter
+
+ZIEL:
+Eine funktionale, minimalistische Tool-GUI mit klar getrennten Arbeitsbereichen und konsistentem Resize-Verhalten.
+-->
+
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<title>Minimal GUI Layout</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body, html { height: 100%; }
+
+  .app {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    width: 100vw;
+  }
+
+  .topbar {
+    display: flex;
+    gap: 8px;
+    padding: 4px;
+    background: #ddd;
+    flex-shrink: 0;
+  }
+
+  .topbar select, .topbar button {
+    height: 28px;
+  }
+
+  .main {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+  }
+
+  .upper {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+  }
+
+  .workspace {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+  }
+
+  .panel {
+    flex: 1;
+    border: 1px solid #999;
+    overflow: auto;
+    font-family: monospace;
+    font-size: 12px;
+    white-space: pre;
+    padding: 6px;
+  }
+
+  .inspector { background: #f5f5f5; }
+  .workbench { background: #eee; }
+
+  .transfer {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 10px;
+    padding: 4px;
+  }
+
+  .bottom-controls {
+    display: flex;
+    justify-content: space-between;
+    padding: 6px;
+  }
+
+  .left-controls, .right-controls {
+    display: flex;
+    gap: 10px;
+  }
+
+  .btn {
+    width: 120px;
+    height: 40px;
+    border: 1px solid #444;
+    background: #ccc;
+  }
+
+  .splitter {
+    height: 6px;
+    background: #888;
+    cursor: row-resize;
+    flex-shrink: 0;
+  }
+
+  .serial {
+    flex: 1;
+    min-height: 0;
+    border-top: 1px solid #999;
+    overflow: auto;
+    background: #111;
+    font-family: monospace;
+    font-size: 12px;
+    padding: 6px;
+  }
+
+  .rx { color: #0f0; }
+  .tx { color: #f33; }
+</style>
+</head>
+<body>
+
+<div class="app">
+
+  <div class="topbar">
+    <button>File</button>
+    <button>Edit</button>
+    <select><option>Device</option></select>
+    <select><option>Port</option></select>
+  </div>
+
+  <div class="main">
+
+    <div class="upper" id="upper">
+
+      <div class="workspace">
+        <div class="panel inspector" id="inspector"></div>
+
+        <div class="transfer">
+          <div class="btn"></div>
+          <div class="btn"></div>
+        </div>
+
+        <div class="panel workbench" id="workbench"></div>
+      </div>
+
+      <div class="bottom-controls">
+        <div class="left-controls">
+          <div class="btn"></div>
+          <div class="btn"></div>
+        </div>
+        <div class="right-controls">
+          <div class="btn"></div>
+          <div class="btn"></div>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="splitter" id="splitter"></div>
+
+    <div class="serial" id="serial"></div>
+
+  </div>
+
+</div>
+
+<script>
+  const splitter = document.getElementById('splitter');
+  const upper = document.getElementById('upper');
+  const serial = document.getElementById('serial');
+
+  let dragging = false;
+
+  splitter.addEventListener('mousedown', () => dragging = true);
+  window.addEventListener('mouseup', () => dragging = false);
+
+  window.addEventListener('mousemove', (e) => {
+    if (!dragging) return;
+
+    const totalHeight = document.querySelector('.main').clientHeight;
+    const newUpper = e.clientY - document.querySelector('.topbar').offsetHeight;
+
+    const min = 100;
+    const max = totalHeight - 100;
+
+    if (newUpper > min && newUpper < max) {
+      upper.style.flex = 'none';
+      upper.style.height = newUpper + 'px';
+    }
+  });
+
+  // Generate HEX content
+  function generateHex(lines = 200) {
+    let out = '';
+    for (let i = 0; i < lines; i++) {
+      let row = '';
+      for (let j = 0; j < 16; j++) {
+        const val = Math.floor(Math.random() * 256).toString(16).padStart(2, '0').toUpperCase();
+        row += val + ' ';
+      }
+      out += row + '\n';
+    }
+    return out;
+  }
+
+  document.getElementById('inspector').textContent = generateHex();
+  document.getElementById('workbench').textContent = generateHex();
+
+  // Serial content
+  function generateSerial(lines = 200) {
+    let out = '';
+    for (let i = 0; i < lines; i++) {
+      if (i % 2 === 0) {
+        out += `<div class="tx">TX: AT+CMD${i}</div>`;
+      } else {
+        out += `<div class="rx">RX: OK ${i}</div>`;
+      }
+    }
+    return out;
+  }
+
+  serial.innerHTML = generateSerial();
+</script>
+
+</body>
+</html>

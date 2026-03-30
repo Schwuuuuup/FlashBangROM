@@ -13,7 +13,7 @@ This project uses Git tags as the release source of truth.
    - `git status --short`
 2. Run validation:
    - `cd firmware && pio run`
-   - `cd host/studio && cargo test`
+   - `cd FlashBangStudio && cargo test`
 3. Create release commit if needed:
    - `git add . && git commit -m "chore: prepare release vX.Y.Z"`
 4. Create tag:

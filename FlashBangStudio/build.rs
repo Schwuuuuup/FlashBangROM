@@ -25,7 +25,7 @@ fn sanitize_tag(tag: Option<String>) -> String {
 
 fn main() {
     let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
-    let repo_root = manifest_dir.join("../..").canonicalize().unwrap_or(manifest_dir.clone());
+    let repo_root = manifest_dir.join("..").canonicalize().unwrap_or(manifest_dir.clone());
 
     let version_tag = sanitize_tag(run_git(&repo_root, &["describe", "--tags", "--abbrev=0"]));
     let build_number = run_git(&repo_root, &["rev-list", "--count", "HEAD"]).unwrap_or_else(|| "0".to_string());

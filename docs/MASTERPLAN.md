@@ -30,7 +30,7 @@ This file is the single source of truth for long-term project direction, durable
 
 ## Goals
 - Deliver a reliable SST39 programming workflow with identify, read, erase, program, verify, and diff support.
-- Preserve a path for adding more device families without rewriting the host/firmware contract.
+- Preserve a path for adding more device families without rewriting the Studio/Firmware contract.
 - Keep firmware modular enough that command parsing, bus control, and chip-specific operations remain separable.
 - Maintain GitHub-based release automation for tagged builds.
 - Provide a beginner-friendly documentation to recreate the hardware and software setup.
@@ -139,7 +139,7 @@ This file is the single source of truth for long-term project direction, durable
 
 ## Protocol Requirements
 - The protocol must remain deterministic and easy to parse in firmware and host code.
-- Protocol versioning is mandatory to prevent host/firmware drift.
+- Protocol versioning is mandatory to prevent Studio/Firmware drift.
 - Current handshake requirement:
 	- host sends `HELLO|<host-version>|<protocol-version>`
 	- device responds `HELLO|<fw-version>|<protocol-version>|<capabilities>`
@@ -182,12 +182,55 @@ This file is the single source of truth for long-term project direction, durable
 - PlatformIO + Arduino remains the firmware build stack until there is a concrete reason to migrate.
 - GitHub release publishing is desired and should stay tag-driven.
 - GUI work is allowed to progress in mock/demo mode before full hardware integration is finished.
+- Repository structure is fixed to root-level `FlashBangFirmware/` (firmware) and `FlashBangStudio/` (desktop app); an extra `host/` layer is intentionally removed.
 - Chip descriptors in `drivers/` are the canonical registry for supported IDs/capabilities, while firmware currently uses compile-time probe routines; runtime YAML parsing on MCU is not part of the current baseline.
 - Terminology is now fixed project-wide for UI/Docs/Protocol labels:
-	- Chip read operations might be called `Dump` - a better Term should be found. "Load" is reserved for File-Operations
+	- Chip read operations must be called `Fetch`. `Dump` is deprecated and should be replaced in UI/docs.
 	- Chip write/program operations must be called `Flash`. "Write" is ambiguous and should be avoided in user-facing wording.
 	- File transfer terms `Load` and `Save` are reserved for opening and storing data in files on the Computer running the application
 	- `Upload`/`Download` are easily confused with loading/storing data from/to internet servers and should be avoided in user-facing wording.
+	- The left-side chip snapshot pane should be named `Inspector` in UI labels (internal code naming may differ).
+	- Existing protocol command names with `MONITOR` remain unchanged for compatibility.
+- Host GUI layout baseline is now fixed as `P / (R-G-B) / (Y-C) / S`:
+	- `P`: single top navigation/info bar, including status feedback.
+	- `R-G-B`: Inspector left and Workbench right must always share remaining width 50/50, with Transfer column centered between them.
+	- `Y-C`: lower operation row with Chip actions on the left and File actions on the right.
+	- `S`: serial monitor occupies remaining height below a draggable splitter.
+- Host GUI splitter behavior baseline:
+	- Splitter scope is global across tabs, not just Hex Workspace.
+	- Default height split is 75% upper content / 25% serial monitor.
+	- Upper and lower areas must keep minimum heights to prevent layout collapse on small windows.
+
+## Operation Matrix (Canonical)
+- Icon button semantics use five 40x40 tiles per operation: `left base`, `left overlay`, `center arrow`, `right overlay`, `right base`.
+- Base icon vocabulary:
+	- `F` = Flash chip
+	- `I` = Inspector
+	- `W` = Workbench
+	- `D` = Disk
+	- `T` = Trash
+- Overlay icon vocabulary:
+	- `I` = Image (optional/empty overlay)
+	- `S` = Sector/Block
+	- `R` = Range
+- Arrow icon vocabulary by operation class:
+	- `fetch`, `erase`, `flash`, `copy`, `load`, `save`
+- Canonical 15 operations:
+	- `F > I` = `FetchImage`
+	- `F+R > I+R` = `FetchRange`
+	- `F+S > I+S` = `FetchSector`
+	- `F > T` = `EraseImage`
+	- `F+S > T` = `EraseSector`
+	- `F > W` = `FlashImage`
+	- `F+R > W+R` = `FlashRange`
+	- `F+S > W+S` = `FlashSector`
+	- `I > W` = `CopyImage`
+	- `I+R > W+R` = `CopyRange`
+	- `I+S > W+S` = `CopySector`
+	- `D > W` = `LoadImage`
+	- `D+S > W+S` = `LoadSector`
+	- `W > D` = `SaveImage`
+	- `W+S > D+S` = `SaveSector`
 
 ## Insights For Future Sessions
 - Early GUI and protocol work did not need permanent hardware access; the mock-device path was useful and should be preserved.

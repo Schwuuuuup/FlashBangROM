@@ -21,8 +21,8 @@ FlashBang is a modular ROM flashing system for parallel NOR chips.
 - Verify with visual diff in host app
 
 ## Repository Layout
-- `firmware/` Device firmware
-- `host/studio/` Host app (Rust)
+- `FlashBangFirmware/` Device firmware
+- `FlashBangStudio/` Host app (Rust)
 - `protocol/` Protocol specification
 - `drivers/` Chip descriptors and schema
 - `docs/` Architecture and master planning
