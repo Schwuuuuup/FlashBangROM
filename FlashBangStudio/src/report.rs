@@ -64,6 +64,7 @@ pub fn group_mismatches(mismatches: &[ByteMismatch]) -> Vec<MismatchRange> {
     ranges
 }
 
+#[allow(dead_code)]
 pub fn export_report_json(path: &Path, report: &DiffReport) -> std::io::Result<()> {
     let json = serde_json::to_string_pretty(report)
         .map_err(std::io::Error::other)?;

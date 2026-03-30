@@ -10,7 +10,7 @@ Diese Datei beschreibt den aktuellen Aufbau der Desktop-GUI in `FlashBangStudio`
   - Verbindung zum Geraet (Serial Connect, HELLO, ID)
   - Byte-Ansicht fuer Inspector (Chip-Snapshot) und Workbench (Bearbeitungsbereich)
   - Transfer-Operationen gemaess Operation-Matrix (Fetch, Flash, Erase, Copy, Load, Save)
-  - Diff/Verify-Auswertung inkl. Report-Export
+  - Diff/Verify-Auswertung fuer Farb-/Statuslogik (ohne separaten Diff-Tab)
   - Serial-Monitor (TX/RX) zur Diagnose
 
 ### Laufzeitfluss (high level)
@@ -21,10 +21,7 @@ Diese Datei beschreibt den aktuellen Aufbau der Desktop-GUI in `FlashBangStudio`
 3. `FlashBangGuiApp::update()`:
    - Zeichnet Top-Bar (P), zentralen Arbeitsbereich, globalen Splitter und Serial-Monitor (S).
    - Verarbeitet Connect/Disconnect/Query-FW Aktionen.
-   - Rendert je nach Tab:
-     - Chip Info
-     - Hex Workspace
-     - Diff View
+  - Rendert den Hex Workspace als zentrale Hauptansicht.
 4. Aktionen im Hex-Workspace triggern:
    - Protokoll-Commands ueber Serial (z. B. `READ|...`, `PROGRAM_BYTE|...`)
   - Buffer-Updates (Inspector/Workbench)
@@ -38,7 +35,7 @@ Diese Datei beschreibt den aktuellen Aufbau der Desktop-GUI in `FlashBangStudio`
   - Diff-Ergebnis (`diff_report`)
   - GUI-Log (`log`)
 - `FlashBangGuiApp` haelt zusaetzlich:
-  - GUI-Zustand (aktiver Tab, Farbmodus, Cursor, Eingabefelder)
+  - GUI-Zustand (Farbmodus, Cursor, Eingabefelder)
   - Serial-Verbindung (`serial_handle`, Ports, Wire-Log)
   - Icon-Assets und gecachte Composite-Textures
 
@@ -52,15 +49,13 @@ Diese Datei beschreibt den aktuellen Aufbau der Desktop-GUI in `FlashBangStudio`
   - `run_gui()` erstellt eframe-Fenster
   - `impl eframe::App for FlashBangGuiApp` mit zentraler `update()`-Schleife
 
-## 2.2 UI-Struktur (Panels und Tabs)
+## 2.2 UI-Struktur (Panels)
 - Datei: `FlashBangStudio/src/gui.rs`
-  - Top Bar (P): Portwahl, Connect/Disconnect, FW-Abfrage, Tab-Wechsel, Statusanzeige
+  - Top Bar (P): Portwahl, Connect/Disconnect, FW-Abfrage, Statusanzeige inkl. kompakter Chip-Info
   - Center Panel: oberer Arbeitsbereich + globaler Splitter + Serial Monitor (S)
   - Serial Monitor nutzt die verbleibende Resthoehe dynamisch
-- Tab-Renderer im oberen Arbeitsbereich:
-  - `draw_chip_info()`
+- Renderer im oberen Arbeitsbereich:
   - `draw_hex_dump()`
-  - `draw_diff_view()`
 
 ## 2.2.1 Layout-Skizze Gesamtfenster
 
@@ -151,13 +146,11 @@ Hinweis:
 
 Wenn du nur das Layout anfassen willst, starte hier:
 - `update()`:
-  - Top-Bar, Tab-Umschaltung, globale Splitter- und Resthoehenlogik.
+  - Top-Bar, globale Splitter- und Resthoehenlogik.
 - `draw_hex_dump()`:
   - komplette Geometrie fuer den Haupt-Tab, inklusive Spalten und Gruppen.
 - `draw_byte_grid()`:
   - konkrete Darstellung der Bytezellen.
-- `draw_chip_info()` und `draw_diff_view()`:
-  - Nebentabs mit eigener Unterstruktur.
 
 ## 2.2.5 Mini-Guide: Layout sauber aendern
 
@@ -235,7 +228,7 @@ Beispiel: Unten zusaetzlichen Operationsblock ergaenzen
   - Export als TXT/JSON
 - Datei: `FlashBangStudio/src/gui.rs`
   - `rebuild_diff_report()` wird nach Datenaenderungen aufgerufen
-  - `draw_diff_view()` zeigt Ergebnis
+  - kein separater Diff-Tab; Diff bleibt intern fuer Vergleichslogik nutzbar
 
 ## 2.7 Icon-System (Operation Matrix)
 - Datei: `FlashBangStudio/src/gui.rs`
@@ -326,12 +319,12 @@ Beispiel: Firmware sendet neuen `STATUS|...`-Detailinhalt.
 3. Status-/Log-Ausgabe in GUI ergaenzen.
 4. Parser-Tests in `protocol.rs` erweitern.
 
-## 4.5 Beispiel D: Layout-Tab erweitern
-Beispiel: Neuer Tab fuer Statistik.
+## 4.5 Beispiel D: Layout-Bereich erweitern
+Beispiel: Neuer Statistik-Block in der Hauptansicht.
 
 1. In `FlashBangGuiApp` ggf. neuen Zustand hinzufuegen.
-2. Tab-Auswahl in `update()` erweitern.
-3. Neue Renderfunktion erstellen, z. B. `draw_stats_view()`.
+2. Den Bereich in `draw_hex_dump()` an geeigneter Stelle einfuegen.
+3. Neue Renderfunktion erstellen, z. B. `draw_stats_panel()`.
 4. Keine schwere Logik direkt im Rendercode, sondern in Hilfsmethoden auslagern.
 
 ## 5) Coding-Hinweise (spezifisch fuer diese GUI)

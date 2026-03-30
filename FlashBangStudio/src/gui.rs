@@ -9,7 +9,7 @@ use tinyfiledialogs::{open_file_dialog, save_file_dialog};
 
 use crate::{
     protocol::{parse_device_frame, DeviceFrame},
-    report::{build_report, export_report_json, export_report_text, DiffReport},
+    report::{build_report, DiffReport},
     session::{
         list_serial_ports, open_serial_port, ChipId, HelloInfo, SerialPortEntry,
     },
@@ -121,7 +121,6 @@ struct WireLogEntry {
 }
 
 pub struct FlashBangGuiApp {
-    active_tab: usize,
     data: AppData,
     available_ports: Vec<SerialPortEntry>,
     selected_port_index: usize,
@@ -156,7 +155,6 @@ impl FlashBangGuiApp {
         let available_ports = list_serial_ports().unwrap_or_default();
 
         FlashBangGuiApp {
-            active_tab: 0,
             data,
             available_ports,
             selected_port_index: 0,
@@ -233,6 +231,20 @@ impl FlashBangGuiApp {
 
     fn chip_size(&self) -> Option<usize> {
         self.data.chip.as_ref().map(|c| c.size_bytes as usize)
+    }
+
+    fn chip_status_text(&self) -> Option<String> {
+        self.data.chip.as_ref().map(|chip| {
+            format!(
+                "Chip erkannt: {} (man 0x{:02X} dev 0x{:02X} / {}K / {}B/S / {} Sectors)",
+                chip.name,
+                chip.manufacturer_id,
+                chip.device_id,
+                chip.size_bytes / 1024,
+                chip.sector_size,
+                chip.sector_count(),
+            )
+        })
     }
 
     fn sector_size(&self) -> Option<usize> {
@@ -484,10 +496,6 @@ impl FlashBangGuiApp {
     }
 
     fn handle_workspace_typing(&mut self, ctx: &egui::Context) {
-        if self.active_tab != 1 {
-            return;
-        }
-
         let events = ctx.input(|i| i.events.clone());
         for event in events {
             match event {
@@ -1051,7 +1059,7 @@ impl FlashBangGuiApp {
 
     fn icon_button(ui: &mut egui::Ui, texture: &egui::TextureHandle, tooltip: &str) -> egui::Response {
         let image = egui::Image::new((texture.id(), egui::vec2(120.0, 40.0)));
-        ui.add(egui::ImageButton::new(image))
+        ui.add_sized([120.0, 40.0], egui::ImageButton::new(image).frame(false))
             .on_hover_text(tooltip)
     }
 
@@ -1289,7 +1297,12 @@ impl eframe::App for FlashBangGuiApp {
                     self.show_about = true;
                 }
                 ui.separator();
-                ui.label(format!("Status: {}", self.status));
+                let mut status_line = format!("Status: {}", self.status);
+                if let Some(chip_status) = self.chip_status_text() {
+                    status_line.push_str(" | ");
+                    status_line.push_str(&chip_status);
+                }
+                ui.label(status_line);
             });
 
             ui.horizontal(|ui| {
@@ -1341,33 +1354,6 @@ impl eframe::App for FlashBangGuiApp {
                     None => ui.colored_label(egui::Color32::YELLOW, "Not connected"),
                 };
             });
-
-            ui.horizontal(|ui| {
-                ui.selectable_value(&mut self.active_tab, 0, "Chip Info");
-                ui.selectable_value(&mut self.active_tab, 1, "Hex Workspace");
-                ui.selectable_value(&mut self.active_tab, 2, "Diff View");
-                ui.separator();
-                if ui.button("Export Diff TXT").clicked() {
-                    let path = PathBuf::from("flashbang-verify-report.txt");
-                    match self.data.diff_report.as_ref() {
-                        Some(report) => match export_report_text(&path, report) {
-                            Ok(_) => self.status = format!("Exported: {}", path.display()),
-                            Err(e) => self.status = format!("Export failed: {e}"),
-                        },
-                        None => self.status = "No diff data to export".to_string(),
-                    }
-                }
-                if ui.button("Export Diff JSON").clicked() {
-                    let path = PathBuf::from("flashbang-verify-report.json");
-                    match self.data.diff_report.as_ref() {
-                        Some(report) => match export_report_json(&path, report) {
-                            Ok(_) => self.status = format!("Exported: {}", path.display()),
-                            Err(e) => self.status = format!("Export failed: {e}"),
-                        },
-                        None => self.status = "No diff data to export".to_string(),
-                    }
-                }
-            });
         });
 
         if do_refresh {
@@ -1394,7 +1380,6 @@ impl eframe::App for FlashBangGuiApp {
                         // Replace mock/demo identity with live data only.
                         self.data.chip = None;
                         self.status = format!("Connected to {} @ {} baud", port.name, self.baud_rate);
-                        self.active_tab = 1;
                         do_query_fw = true;
                     }
                     Err(e) => {
@@ -1433,12 +1418,7 @@ impl eframe::App for FlashBangGuiApp {
             ui.allocate_ui_with_layout(
                 upper_size,
                 egui::Layout::top_down(egui::Align::Min),
-                |ui| match self.active_tab {
-                    0 => self.draw_chip_info(ui),
-                    1 => self.draw_hex_dump(ui),
-                    2 => self.draw_diff_view(ui),
-                    _ => {}
-                },
+                |ui| self.draw_hex_dump(ui),
             );
 
             let (splitter_rect, splitter_response) =
@@ -1495,44 +1475,6 @@ impl eframe::App for FlashBangGuiApp {
 }
 
 impl FlashBangGuiApp {
-    fn draw_chip_info(&mut self, ui: &mut egui::Ui) {
-        ui.columns(2, |columns| {
-            let left = &mut columns[0];
-            left.group(|ui| {
-                ui.heading("Device");
-                ui.separator();
-
-                if let Some(hello) = &self.data.hello {
-                    ui.label(format!("FW Version: {}", hello.fw_version));
-                    ui.label(format!("Protocol: {}", hello.protocol_version));
-                    ui.label(format!("Capabilities: {}", hello.capabilities.join(", ")));
-                }
-
-                ui.separator();
-
-                if let Some(chip) = &self.data.chip {
-                    ui.label(format!("Chip: {}", chip.name));
-                    ui.label(format!("Manufacturer: 0x{:02X}", chip.manufacturer_id));
-                    ui.label(format!("Device ID: 0x{:02X}", chip.device_id));
-                    ui.label(format!("Size: {} KiB", chip.size_bytes / 1024));
-                    ui.label(format!("Sector Size: {} B", chip.sector_size));
-                    ui.label(format!("Sector Count: {}", chip.sector_count()));
-                }
-            });
-
-            let right = &mut columns[1];
-            right.group(|ui| {
-                ui.heading("Operation Log");
-                ui.separator();
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    for line in &self.data.log {
-                        ui.monospace(line);
-                    }
-                });
-            });
-        });
-    }
-
     fn draw_hex_dump(&mut self, ui: &mut egui::Ui) {
         self.ensure_chip_buffers();
         if self.data.work_data.is_empty() {
@@ -1615,8 +1557,6 @@ impl FlashBangGuiApp {
                 egui::Layout::top_down(egui::Align::Min),
                 |ui| {
                     ui.group(|ui| {
-                        ui.strong("R: Inspector");
-                        ui.separator();
                         self.draw_byte_grid(ui, Pane::Inspector, "inspector");
                     });
                 },
@@ -1627,9 +1567,6 @@ impl FlashBangGuiApp {
                 egui::Layout::top_down(egui::Align::Min),
                 |ui| {
                     ui.group(|ui| {
-                        ui.strong("G: Transfer (Copy / Flash)");
-                        ui.separator();
-
                         egui::ScrollArea::vertical()
                             .id_source("btn_col_scroll")
                             .show(ui, |ui| {
@@ -1773,8 +1710,6 @@ impl FlashBangGuiApp {
                 egui::Layout::top_down(egui::Align::Min),
                 |ui| {
                     ui.group(|ui| {
-                        ui.strong("B: Workbench");
-                        ui.separator();
                         self.draw_byte_grid(ui, Pane::Workspace, "work");
                     });
                 },
@@ -1789,9 +1724,6 @@ impl FlashBangGuiApp {
                 egui::Layout::top_down(egui::Align::Min),
                 |ui| {
                     ui.group(|ui| {
-                        ui.strong("Y: Chip Ops (Fetch / Erase)");
-                        ui.separator();
-
                         ui.horizontal_wrapped(|ui| {
                             if self.operation_button(
                                 ui,
@@ -1907,9 +1839,6 @@ impl FlashBangGuiApp {
                 egui::Layout::top_down(egui::Align::Min),
                 |ui| {
                     ui.group(|ui| {
-                        ui.strong("C: File Ops (Load / Save)");
-                        ui.separator();
-
                         ui.horizontal_wrapped(|ui| {
                             if self.operation_button(
                                 ui,
@@ -2028,35 +1957,6 @@ impl FlashBangGuiApp {
         });
     }
 
-    fn draw_diff_view(&mut self, ui: &mut egui::Ui) {
-        if let Some(report) = &self.data.diff_report {
-            ui.horizontal(|ui| {
-                ui.label(format!("Compared: {} bytes", report.compared_len));
-                ui.separator();
-                ui.label(format!("Mismatches: {}", report.mismatch_count));
-                ui.separator();
-                ui.label(format!("Regions: {}", report.ranges.len()));
-            });
-
-            ui.separator();
-            ui.heading("Mismatch Regions");
-            egui::Grid::new("diff_regions").striped(true).show(ui, |ui| {
-                ui.strong("Start");
-                ui.strong("End");
-                ui.strong("Count");
-                ui.end_row();
-
-                for r in &report.ranges {
-                    ui.monospace(format!("0x{:05X}", r.start_address));
-                    ui.monospace(format!("0x{:05X}", r.end_address));
-                    ui.label(format!("{}", r.mismatch_count));
-                    ui.end_row();
-                }
-            });
-        } else {
-            ui.label("No diff report available.");
-        }
-    }
 }
 
 #[cfg(test)]

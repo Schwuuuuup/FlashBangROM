@@ -26,7 +26,7 @@ jobs:
       run: pip install platformio
 
     - name: Build Firmware
-      working-directory: firmware
+      working-directory: FlashBangFirmware
       run: pio run
 
     - name: Upload Firmware Artifact

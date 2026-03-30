@@ -12,7 +12,7 @@ This project uses Git tags as the release source of truth.
 1. Ensure clean working tree:
    - `git status --short`
 2. Run validation:
-   - `cd firmware && pio run`
+   - `cd FlashBangFirmware && pio run`
    - `cd FlashBangStudio && cargo test`
 3. Create release commit if needed:
    - `git add . && git commit -m "chore: prepare release vX.Y.Z"`
