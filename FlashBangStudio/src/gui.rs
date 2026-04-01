@@ -270,8 +270,20 @@ impl FlashBangGuiApp {
             .map_err(|e| format!("invalid number: {e}"))
     }
 
+    fn parse_hex_input(text: &str) -> Result<u32, String> {
+        let cleaned = text.trim();
+        if cleaned.is_empty() {
+            return Err("empty input".to_string());
+        }
+        let hex = cleaned
+            .strip_prefix("0x")
+            .or_else(|| cleaned.strip_prefix("0X"))
+            .unwrap_or(cleaned);
+        u32::from_str_radix(hex, 16).map_err(|e| format!("invalid hex: {e}"))
+    }
+
     fn parse_range_input(&self) -> Result<(usize, usize), String> {
-        let start = Self::parse_int_input(&self.range_start_input)? as usize;
+        let start = Self::parse_hex_input(&self.range_start_input)? as usize;
         let len = Self::parse_int_input(&self.range_len_input)? as usize;
         if len == 0 {
             return Err("range len must be > 0".to_string());
@@ -1173,6 +1185,47 @@ impl FlashBangGuiApp {
         }
     }
 
+    fn paint_outlined_cell_text(
+        ui: &egui::Ui,
+        rect: egui::Rect,
+        text: &str,
+        fill_color: egui::Color32,
+        selected: bool,
+    ) {
+        let font_id = egui::TextStyle::Monospace.resolve(ui.style());
+        let center = rect.center();
+
+        let outline_color = if selected {
+            egui::Color32::BLACK
+        } else {
+            egui::Color32::from_rgb(20, 20, 20)
+        };
+
+        let offsets = [
+            egui::vec2(-1.0, 0.0),
+            egui::vec2(1.0, 0.0),
+            egui::vec2(0.0, -1.0),
+            egui::vec2(0.0, 1.0),
+        ];
+        for offset in offsets {
+            ui.painter().text(
+                center + offset,
+                egui::Align2::CENTER_CENTER,
+                text,
+                font_id.clone(),
+                outline_color,
+            );
+        }
+
+        ui.painter().text(
+            center,
+            egui::Align2::CENTER_CENTER,
+            text,
+            font_id,
+            fill_color,
+        );
+    }
+
     fn draw_byte_grid(&mut self, ui: &mut egui::Ui, pane: Pane, id_suffix: &str) {
         let Some(chip_size) = self.chip_size() else {
             ui.label("No chip identified.");
@@ -1182,6 +1235,13 @@ impl FlashBangGuiApp {
         const BYTES_PER_ROW: usize = 16;
         let total_rows = chip_size / BYTES_PER_ROW;
         let sector_size = self.sector_size().unwrap_or(4096);
+        let active_sector_from_input = Self::parse_int_input(&self.sector_input)
+            .ok()
+            .map(|v| v as usize);
+        let selected_range = self
+            .parse_range_input()
+            .ok()
+            .map(|(start, len)| (start, start + len - 1));
 
         let row_height = ui.text_style_height(&egui::TextStyle::Monospace) + 2.0;
         let byte_cell_width = match self.character_mode {
@@ -1204,11 +1264,23 @@ impl FlashBangGuiApp {
                         for row in row_range {
                             let offset = row * BYTES_PER_ROW;
                             if self.show_sector_boundaries && offset % sector_size == 0 {
+                                let sector_idx = offset / sector_size;
+                                let is_active_sector = active_sector_from_input == Some(sector_idx);
+                                let sector_label = if is_active_sector {
+                                    format!(">S{:03}", sector_idx)
+                                } else {
+                                    format!("S{:03}", sector_idx)
+                                };
+                                let sector_color = if is_active_sector {
+                                    egui::Color32::from_rgb(96, 208, 255)
+                                } else {
+                                    egui::Color32::from_rgb(255, 230, 120)
+                                };
                                 ui.add_sized(
                                     [34.0, row_height],
                                     egui::Label::new(
-                                        egui::RichText::new(format!("S{:03}", offset / sector_size))
-                                            .color(egui::Color32::from_rgb(255, 230, 120))
+                                        egui::RichText::new(sector_label)
+                                            .color(sector_color)
                                             .monospace(),
                                     ),
                                 );
@@ -1241,19 +1313,61 @@ impl FlashBangGuiApp {
                                     Pane::Inspector => self.selected_ro_addr == Some(addr),
                                     Pane::Workspace => self.selected_work_addr == Some(addr),
                                 };
+                                let in_selected_range = selected_range
+                                    .map(|(start, end)| addr >= start && addr <= end)
+                                    .unwrap_or(false);
 
                                 let mut text = self.display_text_for_byte(byte);
                                 if self.character_mode == CharacterMode::Ascii && text.is_empty() {
                                     text.push(' ');
                                 }
-                                let response = ui.add_sized(
-                                    [byte_cell_width, row_height],
-                                    egui::SelectableLabel::new(
-                                        selected,
-                                        egui::RichText::new(text).monospace().color(color),
-                                    ),
+                                let (rect, response) = ui.allocate_exact_size(
+                                    egui::vec2(byte_cell_width, row_height),
+                                    egui::Sense::click(),
                                 );
+
+                                // Always use RRRGGGBB value mapping as base cell background.
+                                ui.painter().rect_filled(rect, 0.0, Self::palette_color(byte));
+
+                                if selected {
+                                    ui.painter().rect_stroke(
+                                        rect.shrink(0.5),
+                                        0.0,
+                                        egui::Stroke::new(1.6, egui::Color32::from_rgb(255, 48, 48)),
+                                    );
+                                } else if response.hovered() {
+                                    ui.painter().rect_stroke(
+                                        rect.shrink(0.5),
+                                        0.0,
+                                        egui::Stroke::new(1.4, egui::Color32::from_rgb(96, 208, 255)),
+                                    );
+                                } else if in_selected_range {
+                                    ui.painter().rect_stroke(
+                                        rect.shrink(0.5),
+                                        0.0,
+                                        egui::Stroke::new(1.2, egui::Color32::from_rgb(255, 210, 64)),
+                                    );
+                                }
+                                Self::paint_outlined_cell_text(ui, rect, &text, color, selected);
                                 if response.clicked() {
+                                    let shift_pressed = ui.ctx().input(|i| i.modifiers.shift);
+                                    let anchor = match pane {
+                                        Pane::Inspector => self.selected_ro_addr,
+                                        Pane::Workspace => self.selected_work_addr,
+                                    };
+
+                                    if shift_pressed {
+                                        if let Some(start_anchor) = anchor {
+                                            let start = start_anchor.min(addr);
+                                            let end = start_anchor.max(addr);
+                                            let len = end - start + 1;
+                                            self.range_start_input = format!("{start:05X}");
+                                            self.range_len_input = len.to_string();
+                                            self.status =
+                                                format!("Range selected: 0x{start:05X}..0x{end:05X} ({len} byte(s))");
+                                        }
+                                    }
+
                                     match pane {
                                         Pane::Inspector => {
                                             self.selected_ro_addr = Some(addr);
@@ -1264,6 +1378,7 @@ impl FlashBangGuiApp {
                                             self.active_pane = Pane::Workspace;
                                         }
                                     }
+                                    self.sector_input = (addr / sector_size).to_string();
                                     self.pending_hex_high_nibble = None;
                                 }
                             }
@@ -1541,15 +1656,14 @@ impl FlashBangGuiApp {
         let available_height = ui.available_height();
         let spacing_x = ui.spacing().item_spacing.x;
         const TRANSFER_BUTTON_WIDTH: f32 = 120.0;
-        const TRANSFER_COL_TARGET_WIDTH: f32 = 150.0;
-        const MIN_SIDE_WIDTH: f32 = 120.0;
+        const TRANSFER_COL_PADDING_X: f32 = 12.0;
         const PANEL_GAP_Y: f32 = 6.0;
 
-        let max_transfer = (available_width - (MIN_SIDE_WIDTH * 2.0) - (spacing_x * 2.0))
-            .max(TRANSFER_BUTTON_WIDTH);
-        let transfer_col_width = TRANSFER_COL_TARGET_WIDTH.min(max_transfer);
-        let side_width = ((available_width - transfer_col_width - spacing_x * 2.0) / 2.0)
-            .max(MIN_SIDE_WIDTH);
+        let ideal_transfer_width = TRANSFER_BUTTON_WIDTH + TRANSFER_COL_PADDING_X;
+        let transfer_col_width = ideal_transfer_width
+            .min((available_width - spacing_x * 2.0).max(TRANSFER_BUTTON_WIDTH));
+        let remaining_width = (available_width - transfer_col_width - spacing_x * 2.0).max(0.0);
+        let side_width = remaining_width * 0.5;
         let top_height = (available_height * 0.75).max(120.0);
         let lower_height = (available_height - top_height - PANEL_GAP_Y).max(90.0);
         let ctx = ui.ctx().clone();
