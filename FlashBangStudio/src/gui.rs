@@ -149,12 +149,29 @@ pub struct FlashBangGuiApp {
 }
 
 impl FlashBangGuiApp {
+    fn fallback_chip() -> ChipId {
+        ChipId {
+            manufacturer_id: 0xBF,
+            device_id: 0xB7,
+            name: "SST39SF040",
+            size_bytes: 512 * 1024,
+            sector_size: 4096,
+        }
+    }
+
+    fn ensure_fallback_chip(&mut self) {
+        if self.data.chip.is_none() {
+            self.data.chip = Some(Self::fallback_chip());
+            self.ensure_chip_buffers();
+        }
+    }
+
     fn new() -> Self {
         let data = AppData::default();
 
         let available_ports = list_serial_ports().unwrap_or_default();
 
-        FlashBangGuiApp {
+        let mut app = FlashBangGuiApp {
             data,
             available_ports,
             selected_port_index: 0,
@@ -180,7 +197,10 @@ impl FlashBangGuiApp {
             pending_hex_high_nibble: None,
             icon_assets: None,
             upper_area_ratio: 0.75,
-        }
+        };
+
+        app.ensure_fallback_chip();
+        app
     }
 
     fn draw_serial_monitor(&mut self, ui: &mut egui::Ui) {
@@ -746,25 +766,25 @@ impl FlashBangGuiApp {
                                 ));
                                 self.status = format!("Chip erkannt: {}", chip.name);
                             } else {
-                                self.data.chip = None;
+                                self.ensure_fallback_chip();
                                 self.data.log.push(format!(
                                     "ID unknown: MFR=0x{:02X} DEV=0x{:02X}",
                                     mfr, dev
                                 ));
                                 self.status =
-                                    format!("Chip nicht erkannt: MFR=0x{:02X} DEV=0x{:02X}", mfr, dev);
+                                    format!("Chip nicht erkannt: MFR=0x{:02X} DEV=0x{:02X} (Fallback aktiv)", mfr, dev);
                             }
                         }
                         return;
                     }
                 }
 
-                self.data.chip = None;
-                self.status = "Keine verwertbare ID-Antwort erhalten".to_string();
+                self.ensure_fallback_chip();
+                self.status = "Keine verwertbare ID-Antwort erhalten (Fallback aktiv)".to_string();
             }
             Err(e) => {
-                self.data.chip = None;
-                self.status = format!("ID-Abfrage fehlgeschlagen: {e}");
+                self.ensure_fallback_chip();
+                self.status = format!("ID-Abfrage fehlgeschlagen: {e} (Fallback aktiv)");
             }
         }
     }
@@ -1492,8 +1512,6 @@ impl eframe::App for FlashBangGuiApp {
                         );
                         self.serial_handle = Some(handle);
                         self.connected_port_name = Some(port.name.clone());
-                        // Replace mock/demo identity with live data only.
-                        self.data.chip = None;
                         self.status = format!("Connected to {} @ {} baud", port.name, self.baud_rate);
                         do_query_fw = true;
                     }
