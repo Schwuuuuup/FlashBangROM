@@ -4,11 +4,6 @@
 
 #include "device_types.h"
 
-void sst39UnlockProgram();
-void sst39UnlockEraseSetup();
-void sst39IdEntry();
-void sst39IdExit();
-
 bool waitToggleDone(uint32_t addr, uint32_t timeoutUs);
 bool waitDq7DoneProgram(uint32_t addr, uint8_t expected, uint32_t timeoutUs);
 

@@ -28,9 +28,14 @@ def sanitize_tag(tag):
 project_dir = Path(env.subst("$PROJECT_DIR"))
 repo_root = project_dir.parent
 generated_header = project_dir / "include" / "generated_build_info.h"
+version_file = project_dir / "VERSION"
 
 raw_tag = run_git(repo_root, ["describe", "--tags", "--abbrev=0"])
 version_tag = sanitize_tag(raw_tag)
+if version_file.exists():
+    explicit_version = version_file.read_text(encoding="utf-8").strip()
+    if explicit_version:
+        version_tag = explicit_version
 commit_count = run_git(repo_root, ["rev-list", "--count", "HEAD"]) or "0"
 short_sha = run_git(repo_root, ["rev-parse", "--short=8", "HEAD"]) or "nogit"
 dirty = 1 if run_git(repo_root, ["status", "--porcelain"]) else 0

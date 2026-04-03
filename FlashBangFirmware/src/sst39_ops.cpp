@@ -5,35 +5,7 @@
 #include "device_globals.h"
 #include "hal_bus.h"
 #include "protocol_io.h"
-
-void sst39UnlockProgram() {
-  writeCycle(0x5555, 0xAA);
-  writeCycle(0x2AAA, 0x55);
-  writeCycle(0x5555, 0xA0);
-}
-
-void sst39UnlockEraseSetup() {
-  writeCycle(0x5555, 0xAA);
-  writeCycle(0x2AAA, 0x55);
-  writeCycle(0x5555, 0x80);
-  writeCycle(0x5555, 0xAA);
-  writeCycle(0x2AAA, 0x55);
-}
-
-void sst39IdEntry() {
-  writeCycle(0x5555, 0xAA);
-  writeCycle(0x2AAA, 0x55);
-  writeCycle(0x5555, 0x90);
-  delayMicroseconds(WAIT_ID_MODE_US);
-}
-
-void sst39IdExit() {
-  // Exit ID mode with explicit unlock + reset sequence.
-  writeCycle(0x5555, 0xAA);
-  writeCycle(0x2AAA, 0x55);
-  writeCycle(0x5555, 0xF0);
-  delayMicroseconds(WAIT_ID_MODE_US);
-}
+#include "seq_interpreter.h"
 
 bool waitToggleDone(uint32_t addr, uint32_t timeoutUs) {
   const uint32_t start = micros();
@@ -74,12 +46,8 @@ bool sst39ProgramByte(uint32_t addr, uint8_t value) {
   if (!validateRange(addr, 1)) {
     return false;
   }
-  sst39UnlockProgram();
-  writeCycle(addr, value);
-  bool done = waitToggleDone(addr, TIMEOUT_BYTE_PROGRAM_US);
-  if (!done) {
-    return false;
-  }
+  SeqResult r = executeNamedSequence(g_driverSlot, "PROGRAM_BYTE", addr, value);
+  if (!r.ok) return false;
   delayMicroseconds(WAIT_POST_PROGRAM_STABLE_US);
   return true;
 }
@@ -89,23 +57,25 @@ bool sst39SectorErase(uint32_t addr) {
   if (sectorBase >= g_chipSizeBytes) {
     return false;
   }
-  sst39UnlockEraseSetup();
-  writeCycle(sectorBase, 0x30);
-  return waitToggleDone(sectorBase, TIMEOUT_SECTOR_ERASE_US);
+  SeqResult r = executeNamedSequence(g_driverSlot, "SECTOR_ERASE", sectorBase, 0);
+  return r.ok;
 }
 
 bool sst39ChipErase() {
-  sst39UnlockEraseSetup();
-  writeCycle(0x5555, 0x10);
-  return waitToggleDone(0x0000, TIMEOUT_CHIP_ERASE_US);
+  SeqResult r = executeNamedSequence(g_driverSlot, "CHIP_ERASE", 0, 0);
+  return r.ok;
 }
 
 Sst39ChipInfo sst39ReadId() {
   Sst39ChipInfo info;
-  sst39IdEntry();
-  info.manufacturer = readCycle(0x0000);
-  info.device = readCycle(0x0001);
-  sst39IdExit();
+  SeqResult rEntry = executeNamedSequence(g_driverSlot, "ID_ENTRY", 0, 0);
+  if (!rEntry.ok) return info;
+
+  SeqResult rRead = executeNamedSequence(g_driverSlot, "ID_READ", 0, 0);
+  info.manufacturer = rRead.r0;
+  info.device = rRead.r1;
+
+  executeNamedSequence(g_driverSlot, "ID_EXIT", 0, 0);
 
   if (info.manufacturer == 0xBF && info.device == 0xB5) {
     info.name = "SST39SF010A";

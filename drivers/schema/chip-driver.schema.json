@@ -7,27 +7,59 @@
     "id",
     "family",
     "name",
-    "jedec_ids",
-    "size_bytes",
     "sector_size_bytes",
-    "algorithm_profile",
-    "operations"
+    "sequences",
+    "models"
   ],
   "properties": {
     "id": {"type": "string"},
     "family": {"type": "string"},
     "name": {"type": "string"},
-    "jedec_ids": {
+    "sector_size_bytes": {"type": "integer", "minimum": 1},
+    "address_bits": {"type": "integer", "minimum": 1, "maximum": 24},
+    "models": {
       "type": "array",
-      "items": {"type": "string", "pattern": "^0x[0-9A-Fa-f]{4}$"},
+      "items": {
+        "type": "object",
+        "required": ["jedec_id", "name", "size_bytes"],
+        "properties": {
+          "jedec_id": {"type": "string", "pattern": "^0x[0-9A-Fa-f]{4}$"},
+          "name": {"type": "string"},
+          "size_bytes": {"type": "integer", "minimum": 1}
+        },
+        "additionalProperties": false
+      },
       "minItems": 1
     },
-    "size_bytes": {"type": "integer", "minimum": 1},
-    "sector_size_bytes": {"type": "integer", "minimum": 1},
-    "algorithm_profile": {"type": "string"},
+    "sequences": {
+      "type": "object",
+      "required": ["id_entry", "id_read", "id_exit", "program_byte", "sector_erase", "chip_erase"],
+      "properties": {
+        "id_entry": {"type": "string"},
+        "id_read": {"type": "string"},
+        "id_exit": {"type": "string"},
+        "program_byte": {"type": "string"},
+        "program_range": {"type": "string"},
+        "sector_erase": {"type": "string"},
+        "chip_erase": {"type": "string"}
+      },
+      "additionalProperties": {"type": "string"}
+    },
+    "custom_params": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "default"],
+        "properties": {
+          "name": {"type": "string"},
+          "default": {"type": "integer"}
+        },
+        "additionalProperties": false
+      },
+      "maxItems": 8
+    },
     "operations": {
       "type": "object",
-      "required": ["read", "program_byte", "sector_erase", "chip_erase", "write_status", "chip_id"],
       "properties": {
         "read": {"type": "boolean"},
         "program_byte": {"type": "boolean"},

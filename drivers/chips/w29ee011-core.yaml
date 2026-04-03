@@ -1,0 +1,36 @@
+id: w29ee011-core
+family: Winbond
+name: "W29EE011 Flash"
+sector_size_bytes: 128
+address_bits: 17
+
+models:
+- jedec_id: "0xDAC1"
+  name: "W29EE011"
+  size_bytes: 131072
+
+sequences:
+  id_entry: "W5555,AA;W2AAA,55;W5555,90;D10"
+  id_read: "R0000>R0;R0001>R1"
+  id_exit: "W5555,F0;D10"
+  program_byte: "W5555,AA;W2AAA,55;W5555,A0;W$A,$D;T$A,10000000"
+  program_range: "{W5555,AA;W2AAA,55;W5555,A0;W$A,$D;T$A,10000000}"
+  sector_erase: "UNSUPPORTED"
+  chip_erase: "W5555,AA;W2AAA,55;W5555,80;W5555,AA;W2AAA,55;W5555,10;T0000,50000000"
+
+custom_params:
+- name: PAGE_SIZE_BYTES
+  default: 128
+
+operations:
+  read: true
+  program_byte: true
+  sector_erase: false
+  chip_erase: true
+  write_status: false
+  chip_id: true
+
+timing:
+  program_timeout_ms: 10
+  sector_erase_timeout_ms: 10
+  chip_erase_timeout_ms: 50

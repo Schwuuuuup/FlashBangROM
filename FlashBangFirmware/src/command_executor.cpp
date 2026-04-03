@@ -1,10 +1,14 @@
 #include "command_executor.h"
 
+#include <cstring>
+
 #include "chip_probe.h"
+#include "command_parser.h"
 #include "device_config.h"
 #include "device_globals.h"
 #include "hal_bus.h"
 #include "protocol_io.h"
+#include "seq_interpreter.h"
 #include "sst39_ops.h"
 #include "version_info.h"
 
@@ -41,6 +45,70 @@ const char* bankName(uint8_t bank) {
     return "A8_15";
   }
   return "A16_18";
+}
+
+bool isBuiltinSequenceUpper(const String& name) {
+  return name == "ID_ENTRY" ||
+         name == "ID_READ" ||
+         name == "ID_EXIT" ||
+         name == "PROGRAM_BYTE" ||
+         name == "PROGRAM_RANGE" ||
+         name == "SECTOR_ERASE" ||
+         name == "CHIP_ERASE";
+}
+
+bool isBuiltinSequenceLowerLegacy(const String& name) {
+  return name == "id_entry" ||
+         name == "id_read" ||
+         name == "id_exit" ||
+         name == "program_byte" ||
+         name == "program_range" ||
+         name == "sector_erase" ||
+         name == "chip_erase";
+}
+
+bool isCustomSequenceName(const String& name) {
+  if (name.length() == 0) {
+    return false;
+  }
+  char first = name.charAt(0);
+  if (first < 'a' || first > 'z') {
+    return false;
+  }
+  for (uint16_t i = 0; i < name.length(); ++i) {
+    char c = name.charAt(i);
+    bool ok = (c >= 'a' && c <= 'z') ||
+              (c >= '0' && c <= '9') ||
+              c == '_';
+    if (!ok) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool isBuiltinParameterName(const String& key) {
+  return key == "CHIP_SIZE" || key == "SECTOR_SIZE" || key == "ADDR_BITS";
+}
+
+bool isCustomParameterName(const String& key) {
+  if (key.length() == 0 || key.length() >= MAX_PARAM_NAME) {
+    return false;
+  }
+  char first = key.charAt(0);
+  if (first < 'a' || first > 'z') {
+    return false;
+  }
+  for (uint16_t i = 0; i < key.length(); ++i) {
+    char c = key.charAt(i);
+    bool ok = (c >= 'a' && c <= 'z') ||
+              (c >= '0' && c <= '9') ||
+              c == '_';
+    if (!ok) {
+      return false;
+    }
+  }
+  return true;
 }
 
 void executeAddrBusTest(uint8_t bank) {
@@ -94,6 +162,8 @@ void executeCommand(const CommandContext& ctx) {
              "HELLO|host|proto, ID, READ|addr|len, PROGRAM_BYTE|addr|value, "
             "SECTOR_ERASE|addr, "
             "CHIP_ERASE, WRITE_STATUS|addr|expected|timeout, "
+            "SEQUENCE|name|script, PARAMETER|key|value, "
+            "INSPECT, DRIVER_RESET, "
             "DATA_BUS_MONITOR_START, DATA_BUS_MONITOR_STOP, "
             "SET_A#####, "
             "ADDR_BUS_TEST|A0_7|A8_15|A16_18");
@@ -102,7 +172,7 @@ void executeCommand(const CommandContext& ctx) {
     case CommandType::Hello:
       Serial.print("HELLO|");
       Serial.print(firmwareVersionText());
-      Serial.println("|0.1|sst39-core,data-hex");
+      Serial.println("|0.3|driver-upload");
       break;
 
     case CommandType::Id: {
@@ -207,6 +277,236 @@ void executeCommand(const CommandContext& ctx) {
     case CommandType::AddrBusTest:
       executeAddrBusTest(ctx.bank);
       break;
+
+    case CommandType::Sequence: {
+      // Parse from raw line: SEQUENCE|name|script
+      int p1 = g_rawLine.indexOf('|');
+      if (p1 < 0) { sendErr("E_PARSE", "missing pipe"); break; }
+      int p2 = g_rawLine.indexOf('|', p1 + 1);
+      if (p2 < 0) { sendErr("E_PARSE", "missing script"); break; }
+      String name = g_rawLine.substring(p1 + 1, p2);
+      String script = g_rawLine.substring(p2 + 1);
+      name.trim();
+      script.trim();
+      if (name.length() == 0 || name.length() >= MAX_SEQ_NAME) {
+        if (g_inspectPasteActive) {
+          break;
+        }
+        sendErr("E_PARAM", "name too long or empty");
+        break;
+      }
+      if (isBuiltinSequenceLowerLegacy(name)) {
+        if (g_inspectPasteActive) {
+          break;
+        }
+        String detail = String("built-in sequence names must be uppercase: '") +
+                        name + "'";
+        sendErr("E_PARAM", detail.c_str());
+        break;
+      }
+      if (!isBuiltinSequenceUpper(name) && !isCustomSequenceName(name)) {
+        if (g_inspectPasteActive) {
+          break;
+        }
+        String detail = String("bad sequence name len=") + String(name.length()) +
+                        ": '" + name + "'";
+        sendErr("E_PARAM", detail.c_str());
+        break;
+      }
+      if (script.length() == 0 || script.length() >= MAX_SEQ_SCRIPT) {
+        if (g_inspectPasteActive) {
+          break;
+        }
+        sendErr("E_PARAM", "script too long or empty");
+        break;
+      }
+      // Find existing slot or add new
+      bool found = false;
+      for (uint8_t i = 0; i < g_driverSlot.sequence_count; i++) {
+        if (strcmp(g_driverSlot.sequences[i].name, name.c_str()) == 0) {
+          strncpy(g_driverSlot.sequences[i].script, script.c_str(), MAX_SEQ_SCRIPT - 1);
+          g_driverSlot.sequences[i].script[MAX_SEQ_SCRIPT - 1] = '\0';
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        if (g_driverSlot.sequence_count >= MAX_SEQUENCES) {
+          sendErr("E_FULL", "max sequences reached");
+          break;
+        }
+        SequenceSlot& s = g_driverSlot.sequences[g_driverSlot.sequence_count];
+        strncpy(s.name, name.c_str(), MAX_SEQ_NAME - 1);
+        s.name[MAX_SEQ_NAME - 1] = '\0';
+        strncpy(s.script, script.c_str(), MAX_SEQ_SCRIPT - 1);
+        s.script[MAX_SEQ_SCRIPT - 1] = '\0';
+        g_driverSlot.sequence_count++;
+      }
+      g_driverSlot.is_default = false;
+      if (!g_inspectPasteActive) {
+        sendOk("SEQUENCE", name);
+      }
+      break;
+    }
+
+    case CommandType::Parameter: {
+      // Parse from raw line: PARAMETER|key|value
+      int p1 = g_rawLine.indexOf('|');
+      if (p1 < 0) { sendErr("E_PARSE", "missing pipe"); break; }
+      int p2 = g_rawLine.indexOf('|', p1 + 1);
+      if (p2 < 0) { sendErr("E_PARSE", "missing value"); break; }
+      String key = g_rawLine.substring(p1 + 1, p2);
+      String valStr = g_rawLine.substring(p2 + 1);
+      key.trim();
+      valStr.trim();
+      int commentPos = valStr.indexOf('#');
+      if (commentPos >= 0) {
+        valStr = valStr.substring(0, commentPos);
+        valStr.trim();
+      }
+      if (key.length() == 0) {
+        if (g_inspectPasteActive) {
+          break;
+        }
+        sendErr("E_PARAM", "empty key");
+        break;
+      }
+
+      // Treat visibly corrupted keys as malformed input instead of semantic param errors.
+      String keyUp = key;
+      keyUp.toUpperCase();
+      if (!isBuiltinParameterName(keyUp) && !isCustomParameterName(key)) {
+        if (g_inspectPasteActive) {
+          break;
+        }
+        sendErr("E_PARSE", "malformed command");
+        break;
+      }
+
+      // Parse value as hex (consistent with protocol)
+      uint32_t val = 0;
+      if (!parseHex32(valStr, val)) {
+        if (g_inspectPasteActive) {
+          break;
+        }
+        sendErr("E_PARAM", "bad value");
+        break;
+      }
+
+      char firstChar = key.charAt(0);
+      if (firstChar >= 'A' && firstChar <= 'Z') {
+        // Built-in parameter (UPPERCASE)
+        if (keyUp == "CHIP_SIZE") {
+          g_driverSlot.chip_size_bytes = val;
+          g_chipSizeBytes = val;
+        } else if (keyUp == "SECTOR_SIZE") {
+          g_driverSlot.sector_size_bytes = val;
+        } else if (keyUp == "ADDR_BITS") {
+          g_driverSlot.address_bits = static_cast<uint8_t>(val);
+        } else {
+          if (g_inspectPasteActive) {
+            break;
+          }
+          sendErr("E_PARAM", "unknown built-in param");
+          break;
+        }
+      } else {
+        // Custom parameter (lowercase) → $0..$7
+        if (key.length() >= MAX_PARAM_NAME) {
+          if (g_inspectPasteActive) {
+            break;
+          }
+          sendErr("E_PARAM", "key too long");
+          break;
+        }
+        // Find existing or add new
+        bool found = false;
+        for (uint8_t i = 0; i < g_driverSlot.custom_param_count; i++) {
+          if (strcmp(g_driverSlot.custom_params[i].name, key.c_str()) == 0) {
+            g_driverSlot.custom_params[i].value = val;
+            found = true;
+            break;
+          }
+        }
+        if (!found) {
+          if (g_driverSlot.custom_param_count >= MAX_CUSTOM_PARAMS) {
+            if (g_inspectPasteActive) {
+              break;
+            }
+            sendErr("E_FULL", "max custom params reached");
+            break;
+          }
+          CustomParam& cp = g_driverSlot.custom_params[g_driverSlot.custom_param_count];
+          strncpy(cp.name, key.c_str(), MAX_PARAM_NAME - 1);
+          cp.name[MAX_PARAM_NAME - 1] = '\0';
+          cp.value = val;
+          g_driverSlot.custom_param_count++;
+        }
+      }
+      g_driverSlot.is_default = false;
+      if (!g_inspectPasteActive) {
+        sendOk("PARAMETER", key);
+      }
+      break;
+    }
+
+    case CommandType::Inspect: {
+      // Output all state in re-inputtable syntax
+      Serial.println("# INSPECT BEGIN");
+      // Built-in parameters
+      char buf[80];
+      snprintf(buf, sizeof(buf), "PARAMETER|CHIP_SIZE|%lX",
+               static_cast<unsigned long>(g_driverSlot.chip_size_bytes));
+      Serial.println(buf);
+      snprintf(buf, sizeof(buf), "PARAMETER|SECTOR_SIZE|%lX",
+               static_cast<unsigned long>(g_driverSlot.sector_size_bytes));
+      Serial.println(buf);
+      snprintf(buf, sizeof(buf), "PARAMETER|ADDR_BITS|%X",
+               static_cast<unsigned>(g_driverSlot.address_bits));
+      Serial.println(buf);
+      // Custom parameters
+      for (uint8_t i = 0; i < g_driverSlot.custom_param_count; i++) {
+        snprintf(buf, sizeof(buf), "PARAMETER|%s|%lX",
+                 g_driverSlot.custom_params[i].name,
+                 static_cast<unsigned long>(g_driverSlot.custom_params[i].value));
+        Serial.print(buf);
+        Serial.print("  # $");
+        Serial.println(i);
+      }
+      // Sequences
+      for (uint8_t i = 0; i < g_driverSlot.sequence_count; i++) {
+        Serial.print("SEQUENCE|");
+        Serial.print(g_driverSlot.sequences[i].name);
+        Serial.print("|");
+        Serial.println(g_driverSlot.sequences[i].script);
+      }
+      Serial.print("# INSPECT END default=");
+      Serial.println(g_driverSlot.is_default ? "true" : "false");
+      sendOk("INSPECT", "done");
+      break;
+    }
+
+    case CommandType::DriverReset:
+      initDriverSlotDefaults(g_driverSlot);
+      g_chipSizeBytes = g_driverSlot.chip_size_bytes;
+      sendOk("DRIVER_RESET", "defaults restored");
+      break;
+
+    case CommandType::CustomSequence: {
+      // g_rawLine contains the lowercase command name
+      const char* script = findSequence(g_driverSlot, g_rawLine.c_str());
+      if (script == nullptr) {
+        sendErr("E_SEQ", "unknown sequence");
+        break;
+      }
+      SeqResult r = executeSequence(script, 0, 0);
+      if (r.ok) {
+        sendOk(g_rawLine.c_str(), "done");
+      } else {
+        sendErr("E_TIMEOUT", "sequence failed");
+      }
+      break;
+    }
 
     default:
       sendErr("E_UNSUPPORTED", "unsupported command");
