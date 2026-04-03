@@ -9,7 +9,7 @@
 #include "hal_bus.h"
 #include "protocol_io.h"
 #include "seq_interpreter.h"
-#include "sst39_ops.h"
+#include "driver_ops.h"
 #include "version_info.h"
 
 namespace {
@@ -172,15 +172,13 @@ void executeCommand(const CommandContext& ctx) {
     case CommandType::Hello:
       Serial.print("HELLO|");
       Serial.print(firmwareVersionText());
-      Serial.println("|0.3|driver-upload");
+      Serial.println("|0.4|driver-upload");
       break;
 
     case CommandType::Id: {
       ChipInfo info = probeChipInfo();
       String detail = String("mf=0x") + String(info.manufacturer, HEX) +
-                      ",dev=0x" + String(info.device, HEX) +
-                      ",name=" + info.name + ",size=" + String(info.sizeBytes) +
-                      ",driver=" + info.driverId;
+                      ",dev=0x" + String(info.device, HEX);
       sendOk("ID", detail);
       break;
     }
@@ -190,12 +188,7 @@ void executeCommand(const CommandContext& ctx) {
       break;
 
     case CommandType::ProgramByte: {
-      ChipInfo info = probeChipInfo();
-      if (!hasSupportedSst39(info)) {
-        sendErr("E_HW", "chip not detected");
-        break;
-      }
-      bool ok = sst39ProgramByte(ctx.addr, ctx.value);
+      bool ok = driverProgramByte(ctx.addr, ctx.value);
       if (ok) {
         sendOk("PROGRAM_BYTE", "done");
       } else {
@@ -205,12 +198,7 @@ void executeCommand(const CommandContext& ctx) {
     }
 
     case CommandType::SectorErase: {
-      ChipInfo info = probeChipInfo();
-      if (!hasSupportedSst39(info)) {
-        sendErr("E_HW", "chip not detected");
-        break;
-      }
-      bool ok = sst39SectorErase(ctx.addr);
+      bool ok = driverSectorErase(ctx.addr);
       if (ok) {
         sendOk("SECTOR_ERASE", "done");
       } else {
@@ -220,12 +208,7 @@ void executeCommand(const CommandContext& ctx) {
     }
 
     case CommandType::ChipErase: {
-      ChipInfo info = probeChipInfo();
-      if (!hasSupportedSst39(info)) {
-        sendErr("E_HW", "chip not detected");
-        break;
-      }
-      bool ok = sst39ChipErase();
+      bool ok = driverChipErase();
       if (ok) {
         sendOk("CHIP_ERASE", "done");
       } else {
@@ -235,11 +218,6 @@ void executeCommand(const CommandContext& ctx) {
     }
 
     case CommandType::WriteStatus: {
-      ChipInfo info = probeChipInfo();
-      if (!hasSupportedSst39(info)) {
-        sendErr("E_HW", "chip not detected");
-        break;
-      }
       uint32_t timeoutUs =
           ctx.timeoutMs > 0 ? (ctx.timeoutMs * 1000UL) : TIMEOUT_BYTE_PROGRAM_US;
       bool ok = waitDq7DoneProgram(ctx.addr, ctx.value, timeoutUs);

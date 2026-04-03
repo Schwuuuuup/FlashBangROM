@@ -6,7 +6,7 @@
 #include "device_config.h"
 #include "device_globals.h"
 #include "hal_bus.h"
-#include "sst39_ops.h"
+#include "driver_ops.h"
 
 namespace {
 
@@ -168,8 +168,8 @@ bool executeSegment(const char* script, uint16_t& pos,
   return false;  // unknown opcode
 }
 
-// waitToggleDone and waitDq7DoneProgram are declared in sst39_ops.h but
-// we need them here. They're already linked from sst39_ops.cpp.
+// waitToggleDone and waitDq7DoneProgram are declared in the driver ops header but
+// we need them here. They're already linked from driver_ops.cpp.
 
 }  // namespace
 

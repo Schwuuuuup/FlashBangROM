@@ -140,6 +140,10 @@ This file is the single source of truth for long-term project direction, durable
 ## Protocol Requirements
 - The protocol must remain deterministic and easy to parse in firmware and host code.
 - Protocol versioning is mandatory to prevent Studio/Firmware drift.
+- Chip-identification responsibility is split by design:
+	- Firmware must only return raw ID bytes (manufacturer/device) from currently loaded `ID_ENTRY`/`ID_READ`/`ID_EXIT` sequences.
+	- Host application and test tooling must map/validate chip model identity from those raw bytes.
+	- Firmware must not hardcode family/model mapping for SST39/Winbond in the `ID` response path.
 - Current handshake requirement:
 	- host sends `HELLO|<host-version>|<protocol-version>`
 	- device responds `HELLO|<fw-version>|<protocol-version>|<capabilities>`

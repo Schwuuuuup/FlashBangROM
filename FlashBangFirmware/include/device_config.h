@@ -2,7 +2,7 @@
 
 #include <Arduino.h>
 
-// Timing defaults derived from Resources/SST39SF_Protocol_fuer_KI.txt.
+// Timing defaults derived from current external protocol documentation.
 static constexpr uint32_t WAIT_POWER_UP_US = 100;
 static constexpr uint32_t WAIT_POLL_INTERVAL_US = 1;
 static constexpr uint32_t WAIT_POST_PROGRAM_STABLE_US = 1;

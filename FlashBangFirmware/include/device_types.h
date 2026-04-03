@@ -40,13 +40,6 @@ struct CommandContext {
   uint8_t bank = 0;
 };
 
-struct Sst39ChipInfo {
-  uint8_t manufacturer = 0x00;
-  uint8_t device = 0x00;
-  uint32_t sizeBytes = 0;
-  const char* name = "unknown";
-};
-
 struct ChipInfo {
   uint8_t manufacturer = 0x00;
   uint8_t device = 0x00;

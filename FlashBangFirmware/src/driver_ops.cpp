@@ -1,4 +1,4 @@
-#include "sst39_ops.h"
+#include "driver_ops.h"
 
 #include "command_parser.h"
 #include "device_config.h"
@@ -42,7 +42,7 @@ bool waitDq7DoneProgram(uint32_t addr, uint8_t expected, uint32_t timeoutUs) {
   return false;
 }
 
-bool sst39ProgramByte(uint32_t addr, uint8_t value) {
+bool driverProgramByte(uint32_t addr, uint8_t value) {
   if (!validateRange(addr, 1)) {
     return false;
   }
@@ -52,7 +52,7 @@ bool sst39ProgramByte(uint32_t addr, uint8_t value) {
   return true;
 }
 
-bool sst39SectorErase(uint32_t addr) {
+bool driverSectorErase(uint32_t addr) {
   uint32_t sectorBase = addr & 0xFFFFF000UL;
   if (sectorBase >= g_chipSizeBytes) {
     return false;
@@ -61,40 +61,9 @@ bool sst39SectorErase(uint32_t addr) {
   return r.ok;
 }
 
-bool sst39ChipErase() {
+bool driverChipErase() {
   SeqResult r = executeNamedSequence(g_driverSlot, "CHIP_ERASE", 0, 0);
   return r.ok;
-}
-
-Sst39ChipInfo sst39ReadId() {
-  Sst39ChipInfo info;
-  SeqResult rEntry = executeNamedSequence(g_driverSlot, "ID_ENTRY", 0, 0);
-  if (!rEntry.ok) return info;
-
-  SeqResult rRead = executeNamedSequence(g_driverSlot, "ID_READ", 0, 0);
-  info.manufacturer = rRead.r0;
-  info.device = rRead.r1;
-
-  executeNamedSequence(g_driverSlot, "ID_EXIT", 0, 0);
-
-  if (info.manufacturer == 0xBF && info.device == 0xB5) {
-    info.name = "SST39SF010A";
-    info.sizeBytes = 128UL * 1024UL;
-  } else if (info.manufacturer == 0xBF && info.device == 0xB6) {
-    info.name = "SST39SF020A";
-    info.sizeBytes = 256UL * 1024UL;
-  } else if (info.manufacturer == 0xBF && info.device == 0xB7) {
-    info.name = "SST39SF040";
-    info.sizeBytes = 512UL * 1024UL;
-  } else {
-    info.name = "unknown";
-    info.sizeBytes = 0;
-  }
-
-  if (info.sizeBytes > 0) {
-    g_chipSizeBytes = info.sizeBytes;
-  }
-  return info;
 }
 
 void executeRead(uint32_t addr, uint32_t len) {
