@@ -123,6 +123,17 @@ struct WireLogEntry {
     text: String,
 }
 
+#[derive(Clone)]
+enum WarningAction {
+    SwitchDriverAndInitialize { driver_id: String },
+}
+
+#[derive(Clone)]
+struct WarningDialogState {
+    message: String,
+    action: Option<WarningAction>,
+}
+
 pub struct FlashBangGuiApp {
     data: AppData,
     available_ports: Vec<SerialPortEntry>,
@@ -136,6 +147,7 @@ pub struct FlashBangGuiApp {
     selected_driver_index: usize,
     uploaded_driver_id: Option<String>,
     show_about: bool,
+    warning_dialog: Option<WarningDialogState>,
     status: String,
     color_mode: ColorMode,
     character_mode: CharacterMode,
@@ -156,6 +168,22 @@ pub struct FlashBangGuiApp {
 }
 
 impl FlashBangGuiApp {
+    fn parse_upload_param_hex(upload_lines: &[String], key: &str) -> Option<usize> {
+        let prefix = format!("PARAMETER|{key}|");
+        upload_lines
+            .iter()
+            .find_map(|line| line.strip_prefix(&prefix))
+            .and_then(|hex| usize::from_str_radix(hex.trim(), 16).ok())
+    }
+
+    fn selected_driver_geometry(&self) -> Option<(usize, usize)> {
+        let selected = self.available_drivers.get(self.selected_driver_index)?;
+        let plan = driver_catalog::build_upload_plan(&selected.path).ok()?;
+        let chip_size = Self::parse_upload_param_hex(&plan.upload_lines, "CHIP_SIZE")?;
+        let sector_size = Self::parse_upload_param_hex(&plan.upload_lines, "SECTOR_SIZE")?;
+        Some((chip_size, sector_size))
+    }
+
     fn new() -> Self {
         const PREVIEW_SIZE: usize = 0x10000;
 
@@ -181,6 +209,7 @@ impl FlashBangGuiApp {
             selected_driver_index: 0,
             uploaded_driver_id: None,
             show_about: false,
+            warning_dialog: None,
             status: "Nicht verbunden. Verbinde ein Geraet fuer Live-Daten (Preview aktiv).".to_string(),
             color_mode: ColorMode::Diff,
             character_mode: CharacterMode::Hex,
@@ -275,7 +304,11 @@ impl FlashBangGuiApp {
     }
 
     fn sector_size(&self) -> Option<usize> {
-        self.data.chip.as_ref().map(|c| c.sector_size as usize)
+        if let Some(chip) = self.data.chip.as_ref() {
+            Some(chip.sector_size as usize)
+        } else {
+            self.selected_driver_geometry().map(|(_, sector_size)| sector_size)
+        }
     }
 
     fn parse_int_input(text: &str) -> Result<u32, String> {
@@ -327,13 +360,20 @@ impl FlashBangGuiApp {
 
     fn parse_sector_input(&self) -> Result<(usize, usize, usize), String> {
         let sector_index = Self::parse_int_input(&self.sector_input)? as usize;
-        let chip = self
-            .data
-            .chip
-            .as_ref()
-            .ok_or_else(|| "chip unknown".to_string())?;
-        let sector_size = chip.sector_size as usize;
-        let sector_count = chip.sector_count() as usize;
+        let sector_size = self
+            .sector_size()
+            .ok_or_else(|| "sector size unknown".to_string())?;
+        let chip_size = if let Some(chip) = self.data.chip.as_ref() {
+            chip.size_bytes as usize
+        } else if let Some((driver_chip_size, _)) = self.selected_driver_geometry() {
+            driver_chip_size
+        } else {
+            self.data.work_data.len()
+        };
+        if sector_size == 0 || chip_size == 0 {
+            return Err("invalid chip/sector geometry".to_string());
+        }
+        let sector_count = chip_size / sector_size;
         if sector_index >= sector_count {
             return Err(format!("sector out of range 0..{}", sector_count.saturating_sub(1)));
         }
@@ -368,6 +408,39 @@ impl FlashBangGuiApp {
             return ByteState::Orange;
         }
         ByteState::Red
+    }
+
+    fn is_ro_known_range(&self, start: usize, len: usize) -> bool {
+        if len == 0 || start + len > self.data.ro_known.len() {
+            return false;
+        }
+        self.data.ro_known[start..start + len].iter().all(|known| *known)
+    }
+
+    fn can_flash_range(&self, start: usize, len: usize) -> bool {
+        if self.serial_handle.is_none() || self.data.chip.is_none() {
+            return false;
+        }
+        if len == 0 || start + len > self.data.work_data.len() {
+            return false;
+        }
+        if self.sector_size().is_none() {
+            return false;
+        }
+
+        let mut has_gray = false;
+        for addr in start..start + len {
+            match self.byte_state(addr) {
+                ByteState::Red => return false,
+                ByteState::Gray => has_gray = true,
+                _ => {}
+            }
+        }
+
+        if has_gray && !self.allow_flash_gray {
+            return false;
+        }
+        true
     }
 
     fn diff_color_for_state(state: ByteState) -> egui::Color32 {
@@ -670,6 +743,35 @@ impl FlashBangGuiApp {
         self.push_wire(WireDirection::Ui, text.into());
     }
 
+    fn find_driver_index_by_id(&self, driver_id: &str) -> Option<usize> {
+        self.available_drivers
+            .iter()
+            .position(|d| d.id == driver_id)
+    }
+
+    fn switch_to_driver_and_initialize(&mut self, driver_id: &str) -> Result<(), String> {
+        let idx = self
+            .find_driver_index_by_id(driver_id)
+            .ok_or_else(|| format!("driver not available: {driver_id}"))?;
+        self.selected_driver_index = idx;
+        self.upload_selected_driver()?;
+        self.query_chip_id();
+        Ok(())
+    }
+
+    fn warn_dialog(&mut self, text: impl Into<String>) {
+        self.warn_dialog_with_action(text, None);
+    }
+
+    fn warn_dialog_with_action(&mut self, text: impl Into<String>, action: Option<WarningAction>) {
+        let msg = text.into();
+        self.log_action(msg.clone());
+        self.warning_dialog = Some(WarningDialogState {
+            message: msg,
+            action,
+        });
+    }
+
     fn serial_send_and_read_lines(
         &mut self,
         command: &str,
@@ -797,10 +899,19 @@ impl FlashBangGuiApp {
                                             "Driver mismatch: uploaded={}, detected={} (MFR=0x{:02X} DEV=0x{:02X})",
                                             uploaded, chip.driver_id, mfr, dev
                                         ));
-                                        self.status = format!(
-                                            "Treiber passt nicht zum Chip: hochgeladen={}, erkannt={}. Bitte passenden Treiber waehlen und neu hochladen.",
-                                            uploaded, chip.driver_id
+                                        let action = if self.find_driver_index_by_id(&chip.driver_id).is_some() {
+                                            Some(WarningAction::SwitchDriverAndInitialize {
+                                                driver_id: chip.driver_id.clone(),
+                                            })
+                                        } else {
+                                            None
+                                        };
+                                        let warn = format!(
+                                            "WARN: Treiber passt nicht zum Chip: hochgeladen={}, erkannt={}. Du kannst direkt auf '{}' wechseln und initialisieren.",
+                                            uploaded, chip.driver_id, chip.driver_id
                                         );
+                                        self.warn_dialog_with_action(warn.clone(), action);
+                                        self.status = warn;
                                         return;
                                     }
                                 }
@@ -827,10 +938,12 @@ impl FlashBangGuiApp {
                                     "ID unknown: MFR=0x{:02X} DEV=0x{:02X}",
                                     mfr, dev
                                 ));
-                                self.status = format!(
-                                    "Chip nicht im Driver-Katalog: MFR=0x{:02X} DEV=0x{:02X}",
+                                let warn = format!(
+                                    "WARN: Chip nicht im Driver-Katalog: MFR=0x{:02X} DEV=0x{:02X}. Bitte anderen Treiber waehlen oder neuen Treiber anlegen.",
                                     mfr, dev
                                 );
+                                self.warn_dialog(warn.clone());
+                                self.status = warn;
                             }
                         }
                         return;
@@ -1218,16 +1331,19 @@ impl FlashBangGuiApp {
             .on_hover_text(tooltip)
     }
 
-    fn operation_button(
+    fn operation_button_enabled(
         &mut self,
         ui: &mut egui::Ui,
         ctx: &egui::Context,
         key: &str,
         spec: ButtonVisualSpec,
+        enabled: bool,
         tooltip: &str,
     ) -> egui::Response {
         match self.texture_for_visual(ctx, key, spec) {
-            Ok(texture) => Self::icon_button(ui, &texture, tooltip),
+            Ok(texture) => ui
+                .add_enabled_ui(enabled, |ui| Self::icon_button(ui, &texture, tooltip))
+                .inner,
             Err(err) => {
                 self.status = err;
                 ui.add_enabled(false, egui::Button::new(tooltip))
@@ -1813,6 +1929,43 @@ impl eframe::App for FlashBangGuiApp {
                     ui.monospace(format!("Dirty: {}", version::is_dirty()));
                 });
         }
+
+        if let Some(dialog) = self.warning_dialog.clone() {
+            let mut close_warn = false;
+            let mut do_action = false;
+            egui::Window::new("Warnung")
+                .collapsible(false)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.colored_label(egui::Color32::from_rgb(230, 180, 40), &dialog.message);
+                    ui.add_space(8.0);
+                    if dialog.action.is_some() {
+                        if ui.button("Treiber wechseln & initialisieren").clicked() {
+                            do_action = true;
+                        }
+                    }
+                    if ui.button("OK").clicked() {
+                        close_warn = true;
+                    }
+                });
+
+            if do_action {
+                if let Some(WarningAction::SwitchDriverAndInitialize { driver_id }) = dialog.action {
+                    self.log_action(format!(
+                        "Dialog-Aktion: Treiber wechseln & initialisieren -> {}",
+                        driver_id
+                    ));
+                    if let Err(e) = self.switch_to_driver_and_initialize(&driver_id) {
+                        self.status = format!("Treiberwechsel fehlgeschlagen: {e}");
+                    }
+                }
+                close_warn = true;
+            }
+
+            if close_warn {
+                self.warning_dialog = None;
+            }
+        }
     }
 }
 
@@ -1881,6 +2034,42 @@ impl FlashBangGuiApp {
 
         let available_width = ui.available_width();
         let available_height = ui.available_height();
+        let connected = self.serial_handle.is_some();
+        let chip_known = self.data.chip.is_some();
+        let chip_known_size = self.data.chip.as_ref().map(|c| c.size_bytes as usize);
+        let valid_range = self.parse_range_input().ok();
+        let valid_sector = self.parse_sector_input().ok();
+
+        let can_fetch_image = connected && chip_known_size.is_some();
+        let can_fetch_range = connected && chip_known_size.is_some() && valid_range.is_some();
+        let can_fetch_sector = connected && chip_known && valid_sector.is_some();
+        let can_erase_image = connected && chip_known_size.is_some();
+        let can_erase_sector = connected && chip_known && valid_sector.is_some();
+
+        let can_copy_image = chip_known_size
+            .map(|size| self.is_ro_known_range(0, size))
+            .unwrap_or(false);
+        let can_copy_range = valid_range
+            .map(|(start, len)| self.is_ro_known_range(start, len))
+            .unwrap_or(false);
+        let can_copy_sector = valid_sector
+            .map(|(_, start, size)| self.is_ro_known_range(start, size))
+            .unwrap_or(false);
+
+        let can_flash_image = chip_known_size
+            .map(|size| self.can_flash_range(0, size))
+            .unwrap_or(false);
+        let can_flash_range = valid_range
+            .map(|(start, len)| self.can_flash_range(start, len))
+            .unwrap_or(false);
+        let can_flash_sector = valid_sector
+            .map(|(_, start, size)| self.can_flash_range(start, size))
+            .unwrap_or(false);
+
+        let can_load_image = !self.data.work_data.is_empty();
+        let can_load_sector = valid_sector.is_some();
+        let can_save_image = !self.data.work_data.is_empty();
+        let can_save_sector = valid_sector.is_some();
         let spacing_x = ui.spacing().item_spacing.x;
         const TRANSFER_BUTTON_WIDTH: f32 = 120.0;
         const TRANSFER_COL_PADDING_X: f32 = 12.0;
@@ -1916,7 +2105,7 @@ impl FlashBangGuiApp {
                         |ui| {
                             ui.group(|ui| {
                                 ui.horizontal_wrapped(|ui| {
-                                    if self.operation_button(
+                                    if self.operation_button_enabled(
                                         ui,
                                         &ctx,
                                         "fetch_image",
@@ -1927,6 +2116,7 @@ impl FlashBangGuiApp {
                                             right_overlay: None,
                                             right_base: BaseIcon::Inspector,
                                         },
+                                        can_fetch_image,
                                         "Fetch Image (Chip -> Inspector)",
                                     ).clicked() {
                                             self.log_action("Button: Fetch Image");
@@ -1939,7 +2129,7 @@ impl FlashBangGuiApp {
                                                 "Fetch image failed: kein erkannter Chip".to_string();
                                         }
                                     }
-                                    if self.operation_button(
+                                    if self.operation_button_enabled(
                                         ui,
                                         &ctx,
                                         "fetch_range",
@@ -1950,6 +2140,7 @@ impl FlashBangGuiApp {
                                             right_overlay: Some(OverlayIcon::Range),
                                             right_base: BaseIcon::Inspector,
                                         },
+                                        can_fetch_range,
                                         "Fetch Range (Chip+R -> Inspector+R)",
                                     ).clicked() {
                                             self.log_action(format!(
@@ -1965,7 +2156,7 @@ impl FlashBangGuiApp {
                                             Err(e) => self.status = format!("Invalid range: {e}"),
                                         }
                                     }
-                                    if self.operation_button(
+                                    if self.operation_button_enabled(
                                         ui,
                                         &ctx,
                                         "fetch_sector",
@@ -1976,6 +2167,7 @@ impl FlashBangGuiApp {
                                             right_overlay: Some(OverlayIcon::Sector),
                                             right_base: BaseIcon::Inspector,
                                         },
+                                        can_fetch_sector,
                                         "Fetch Sector (Chip+S -> Inspector+S)",
                                     ).clicked() {
                                             self.log_action(format!("Button: Fetch Sector (sector={})", self.sector_input));
@@ -1988,7 +2180,7 @@ impl FlashBangGuiApp {
                                             Err(e) => self.status = format!("Invalid sector: {e}"),
                                         }
                                     }
-                                    if self.operation_button(
+                                    if self.operation_button_enabled(
                                         ui,
                                         &ctx,
                                         "erase_image",
@@ -1999,6 +2191,7 @@ impl FlashBangGuiApp {
                                             right_overlay: None,
                                             right_base: BaseIcon::Trash,
                                         },
+                                        can_erase_image,
                                         "Erase Image (Chip -> Trash)",
                                     ).clicked() {
                                             self.log_action("Button: Erase Image");
@@ -2006,7 +2199,7 @@ impl FlashBangGuiApp {
                                             self.status = format!("Erase all failed: {e}");
                                         }
                                     }
-                                    if self.operation_button(
+                                    if self.operation_button_enabled(
                                         ui,
                                         &ctx,
                                         "erase_sector",
@@ -2017,6 +2210,7 @@ impl FlashBangGuiApp {
                                             right_overlay: None,
                                             right_base: BaseIcon::Trash,
                                         },
+                                        can_erase_sector,
                                         "Erase Sector (Chip+S -> Trash)",
                                     ).clicked() {
                                             self.log_action(format!("Button: Erase Sector (sector={})", self.sector_input));
@@ -2044,7 +2238,7 @@ impl FlashBangGuiApp {
                         egui::ScrollArea::vertical()
                             .id_source("btn_col_scroll")
                             .show(ui, |ui| {
-                                if self.operation_button(
+                                if self.operation_button_enabled(
                                     ui,
                                     &ctx,
                                     "copy_image",
@@ -2055,6 +2249,7 @@ impl FlashBangGuiApp {
                                         right_overlay: None,
                                         right_base: BaseIcon::Workbench,
                                     },
+                                    can_copy_image,
                                     "Copy Image (Inspector -> Workbench)",
                                 ).clicked() {
                                     self.log_action("Button: Copy Image");
@@ -2064,7 +2259,7 @@ impl FlashBangGuiApp {
                                         }
                                     }
                                 }
-                                if self.operation_button(
+                                if self.operation_button_enabled(
                                     ui,
                                     &ctx,
                                     "copy_sector",
@@ -2075,6 +2270,7 @@ impl FlashBangGuiApp {
                                         right_overlay: Some(OverlayIcon::Sector),
                                         right_base: BaseIcon::Workbench,
                                     },
+                                    can_copy_sector,
                                     "Copy Sector (Inspector+S -> Workbench+S)",
                                 ).clicked() {
                                     self.log_action(format!("Button: Copy Sector (sector={})", self.sector_input));
@@ -2087,7 +2283,7 @@ impl FlashBangGuiApp {
                                         Err(e) => self.status = format!("Invalid sector: {e}"),
                                     }
                                 }
-                                if self.operation_button(
+                                if self.operation_button_enabled(
                                     ui,
                                     &ctx,
                                     "copy_range",
@@ -2098,6 +2294,7 @@ impl FlashBangGuiApp {
                                         right_overlay: Some(OverlayIcon::Range),
                                         right_base: BaseIcon::Workbench,
                                     },
+                                    can_copy_range,
                                     "Copy Range (Inspector+R -> Workbench+R)",
                                 ).clicked() {
                                     self.log_action(format!(
@@ -2116,7 +2313,7 @@ impl FlashBangGuiApp {
 
                                 ui.separator();
 
-                                if self.operation_button(
+                                if self.operation_button_enabled(
                                     ui,
                                     &ctx,
                                     "flash_image",
@@ -2127,6 +2324,7 @@ impl FlashBangGuiApp {
                                         right_overlay: None,
                                         right_base: BaseIcon::Workbench,
                                     },
+                                    can_flash_image,
                                     "Flash Image (Chip <- Workbench)",
                                 ).clicked() {
                                     self.log_action("Button: Flash Image");
@@ -2136,7 +2334,7 @@ impl FlashBangGuiApp {
                                         }
                                     }
                                 }
-                                if self.operation_button(
+                                if self.operation_button_enabled(
                                     ui,
                                     &ctx,
                                     "flash_sector",
@@ -2147,6 +2345,7 @@ impl FlashBangGuiApp {
                                         right_overlay: Some(OverlayIcon::Sector),
                                         right_base: BaseIcon::Workbench,
                                     },
+                                    can_flash_sector,
                                     "Flash Sector (Chip+S <- Workbench+S)",
                                 ).clicked() {
                                     self.log_action(format!("Button: Flash Sector (sector={})", self.sector_input));
@@ -2159,7 +2358,7 @@ impl FlashBangGuiApp {
                                         Err(e) => self.status = format!("Invalid sector: {e}"),
                                     }
                                 }
-                                if self.operation_button(
+                                if self.operation_button_enabled(
                                     ui,
                                     &ctx,
                                     "flash_range",
@@ -2170,6 +2369,7 @@ impl FlashBangGuiApp {
                                         right_overlay: Some(OverlayIcon::Range),
                                         right_base: BaseIcon::Workbench,
                                     },
+                                    can_flash_range,
                                     "Flash Range (Chip+R <- Workbench+R)",
                                 ).clicked() {
                                     self.log_action(format!(
@@ -2210,7 +2410,7 @@ impl FlashBangGuiApp {
                         |ui| {
                             ui.group(|ui| {
                                 ui.horizontal_wrapped(|ui| {
-                                    if self.operation_button(
+                                    if self.operation_button_enabled(
                                         ui,
                                         &ctx,
                                         "load_image",
@@ -2221,6 +2421,7 @@ impl FlashBangGuiApp {
                                             right_overlay: None,
                                             right_base: BaseIcon::Workbench,
                                         },
+                                        can_load_image,
                                         "Load Image (Disk -> Workbench)",
                                     ).clicked() {
                                             self.log_action("Button: Load Image");
@@ -2232,7 +2433,7 @@ impl FlashBangGuiApp {
                                             self.status = "Load cancelled".to_string();
                                         }
                                     }
-                                    if self.operation_button(
+                                    if self.operation_button_enabled(
                                         ui,
                                         &ctx,
                                         "load_sector",
@@ -2243,6 +2444,7 @@ impl FlashBangGuiApp {
                                             right_overlay: Some(OverlayIcon::Sector),
                                             right_base: BaseIcon::Workbench,
                                         },
+                                        can_load_sector,
                                         "Load Sector (Disk+S -> Workbench+S)",
                                     ).clicked() {
                                             self.log_action(format!("Button: Load Sector (sector={})", self.sector_input));
@@ -2259,7 +2461,7 @@ impl FlashBangGuiApp {
                                             self.status = "Load cancelled".to_string();
                                         }
                                     }
-                                    if self.operation_button(
+                                    if self.operation_button_enabled(
                                         ui,
                                         &ctx,
                                         "save_image",
@@ -2270,6 +2472,7 @@ impl FlashBangGuiApp {
                                             right_overlay: None,
                                             right_base: BaseIcon::Disk,
                                         },
+                                        can_save_image,
                                         "Save Image (Workbench -> Disk)",
                                     ).clicked() {
                                             self.log_action("Button: Save Image");
@@ -2286,7 +2489,7 @@ impl FlashBangGuiApp {
                                             }
                                         }
                                     }
-                                    if self.operation_button(
+                                    if self.operation_button_enabled(
                                         ui,
                                         &ctx,
                                         "save_sector",
@@ -2297,6 +2500,7 @@ impl FlashBangGuiApp {
                                             right_overlay: Some(OverlayIcon::Sector),
                                             right_base: BaseIcon::Disk,
                                         },
+                                        can_save_sector,
                                         "Save Sector (Workbench+S -> Disk+S)",
                                     ).clicked() {
                                             self.log_action(format!("Button: Save Sector (sector={})", self.sector_input));
