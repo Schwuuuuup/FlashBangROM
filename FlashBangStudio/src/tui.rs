@@ -257,10 +257,11 @@ fn draw_info_tab(frame: &mut Frame, area: Rect, state: &AppState) {
     if let Some(c) = &state.chip_id {
         lines.push(Line::from(format!("  Chip Model   : {}", c.name)));
         lines.push(Line::from(format!(
-            "  Manufacturer : Microchip  (0x{:02X})",
+            "  Manufacturer : 0x{:02X}",
             c.manufacturer_id
         )));
         lines.push(Line::from(format!("  Device ID    : 0x{:02X}", c.device_id)));
+        lines.push(Line::from(format!("  Driver       : {}", c.driver_id)));
         lines.push(Line::from(format!(
             "  Total Size   : {} KiB  ({} bytes)",
             c.size_bytes / 1024,

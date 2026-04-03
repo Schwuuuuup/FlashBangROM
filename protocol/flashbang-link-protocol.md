@@ -1,4 +1,4 @@
-# FlashBang Link Protocol v0.4
+# FlashBang Link Protocol v0.4.1
 
 ## Goals
 - Keep parser deterministic and testable.

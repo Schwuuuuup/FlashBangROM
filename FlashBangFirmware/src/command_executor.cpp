@@ -172,7 +172,7 @@ void executeCommand(const CommandContext& ctx) {
     case CommandType::Hello:
       Serial.print("HELLO|");
       Serial.print(firmwareVersionText());
-      Serial.println("|0.4|driver-upload");
+      Serial.println("|0.4.1|driver-upload");
       break;
 
     case CommandType::Id: {
@@ -188,9 +188,19 @@ void executeCommand(const CommandContext& ctx) {
       break;
 
     case CommandType::ProgramByte: {
-      bool ok = driverProgramByte(ctx.addr, ctx.value);
+      uint8_t observed = 0;
+      bool verifyMismatch = false;
+      bool ok = driverProgramByte(ctx.addr, ctx.value, &observed, &verifyMismatch);
       if (ok) {
         sendOk("PROGRAM_BYTE", "done");
+      } else if (verifyMismatch) {
+        char detail[72];
+        snprintf(detail, sizeof(detail),
+                 "verify mismatch addr=0x%05lX expected=0x%02X observed=0x%02X",
+                 static_cast<unsigned long>(ctx.addr),
+                 static_cast<unsigned>(ctx.value),
+                 static_cast<unsigned>(observed));
+        sendErr("E_VERIFY", detail);
       } else {
         sendErr("E_TIMEOUT", "program timeout");
       }
