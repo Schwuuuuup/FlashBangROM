@@ -71,6 +71,19 @@ def run() -> int:
             ("read16", "READ|00000|16"),
             ("read-oob", "READ|80000|1"),
             ("malformed", "READ|GGGG|10"),
+            # --- Driver-based communication tests ---
+            ("inspect", "INSPECT"),
+            ("sequence-set", "SEQUENCE|PROGRAM_BYTE|W5555,AA;W2AAA,55;W5555,A0;W$A,$D;T$A,50000"),
+            ("param-builtin", "PARAMETER|CHIP_SIZE|80000"),
+            ("param-custom", "PARAMETER|page_size|80"),
+            ("inspect-after", "INSPECT"),
+            ("driver-reset", "DRIVER_RESET"),
+            ("inspect-reset", "INSPECT"),
+            # Bad inputs
+            ("seq-empty", "SEQUENCE||"),
+            ("seq-toolong-name", "SEQUENCE|" + "x" * 25 + "|W5555,AA"),
+            ("param-bad-val", "PARAMETER|CHIP_SIZE|ZZZZ"),
+            ("unknown-custom", "nonexistent_seq"),
         ]
 
         if args.destructive:

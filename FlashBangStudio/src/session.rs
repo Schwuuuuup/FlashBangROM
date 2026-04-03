@@ -1,7 +1,10 @@
 use crate::{
+    driver_catalog,
     mock_device::MockDevice,
     protocol::{parse_device_frame, DeviceFrame},
 };
+
+const SUPPORTED_PROTOCOL_VERSION: &str = "0.4.1";
 
 #[derive(Debug, Clone)]
 pub struct SerialPortEntry {
@@ -24,34 +27,41 @@ pub struct HelloInfo {
 pub struct ChipId {
     pub manufacturer_id: u8,
     pub device_id: u8,
-    pub name: &'static str,
+    pub name: String,
     pub size_bytes: u32,
     pub sector_size: u32,
+    pub driver_id: String,
 }
 
 impl ChipId {
     pub fn from_ids(mfr: u8, dev: u8) -> Option<ChipId> {
+        if let Some(chip) = driver_catalog::lookup_chip(mfr, dev) {
+            return Some(chip);
+        }
         match (mfr, dev) {
             (0xBF, 0xB5) => Some(ChipId {
                 manufacturer_id: mfr,
                 device_id: dev,
-                name: "SST39SF010A",
+                name: "SST39SF010A".to_string(),
                 size_bytes: 128 * 1024,
                 sector_size: 4096,
+                driver_id: "sst39-core".to_string(),
             }),
             (0xBF, 0xB6) => Some(ChipId {
                 manufacturer_id: mfr,
                 device_id: dev,
-                name: "SST39SF020A",
+                name: "SST39SF020A".to_string(),
                 size_bytes: 256 * 1024,
                 sector_size: 4096,
+                driver_id: "sst39-core".to_string(),
             }),
             (0xBF, 0xB7) => Some(ChipId {
                 manufacturer_id: mfr,
                 device_id: dev,
-                name: "SST39SF040",
+                name: "SST39SF040".to_string(),
                 size_bytes: 512 * 1024,
                 sector_size: 4096,
+                driver_id: "sst39-core".to_string(),
             }),
             _ => None,
         }
@@ -138,6 +148,29 @@ pub trait DeviceSession {
     ) -> Result<Vec<u8>, SessionError>;
 }
 
+pub fn parse_id_detail(detail: &str) -> (Option<u8>, Option<u8>) {
+    let mut mfr = None;
+    let mut dev = None;
+    for kv in detail.split(',') {
+        let mut parts = kv.splitn(2, '=');
+        let key = parts.next().unwrap_or("").trim().to_lowercase();
+        let val = parts
+            .next()
+            .unwrap_or("")
+            .trim()
+            .trim_start_matches("0x")
+            .trim_start_matches("0X");
+        if let Ok(v) = u8::from_str_radix(val, 16) {
+            match key.as_str() {
+                "mf" | "manufacturer" => mfr = Some(v),
+                "dev" | "device" => dev = Some(v),
+                _ => {}
+            }
+        }
+    }
+    (mfr, dev)
+}
+
 // ---------------------------------------------------------------------------
 // Mock session (backed by MockDevice)
 // ---------------------------------------------------------------------------
@@ -168,6 +201,12 @@ impl DeviceSession for MockSession {
                 capabilities,
             }) = parse_device_frame(line)
             {
+                if protocol_version != SUPPORTED_PROTOCOL_VERSION {
+                    return Err(SessionError::Protocol(format!(
+                        "unsupported protocol version: got {}, expected {}",
+                        protocol_version, SUPPORTED_PROTOCOL_VERSION
+                    )));
+                }
                 return Ok(HelloInfo {
                     fw_version,
                     protocol_version,
@@ -182,25 +221,9 @@ impl DeviceSession for MockSession {
         let lines = self.send("ID");
         for line in &lines {
             if let Ok(DeviceFrame::Ok { command: _, detail }) = parse_device_frame(line) {
-                let mut mfr = 0u8;
-                let mut dev = 0u8;
-                for kv in detail.split(',') {
-                    let mut parts = kv.splitn(2, '=');
-                    let key = parts.next().unwrap_or("").trim();
-                    let val = parts
-                        .next()
-                        .unwrap_or("0")
-                        .trim()
-                        .trim_start_matches("0x")
-                        .trim_start_matches("0X");
-                    if let Ok(v) = u8::from_str_radix(val, 16) {
-                        match key {
-                            "manufacturer" => mfr = v,
-                            "device" => dev = v,
-                            _ => {}
-                        }
-                    }
-                }
+                let (mfr, dev) = parse_id_detail(&detail);
+                let mfr = mfr.unwrap_or(0);
+                let dev = dev.unwrap_or(0);
                 return ChipId::from_ids(mfr, dev).ok_or(SessionError::ChipUnknown(mfr, dev));
             }
         }
@@ -236,5 +259,24 @@ impl DeviceSession for MockSession {
         }
 
         Ok(data)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_id_detail;
+
+    #[test]
+    fn parse_id_detail_accepts_short_keys() {
+        let (mfr, dev) = parse_id_detail("mf=0xBF,dev=0xB7");
+        assert_eq!(mfr, Some(0xBF));
+        assert_eq!(dev, Some(0xB7));
+    }
+
+    #[test]
+    fn parse_id_detail_accepts_legacy_keys() {
+        let (mfr, dev) = parse_id_detail("manufacturer=0xDA,device=0xC1");
+        assert_eq!(mfr, Some(0xDA));
+        assert_eq!(dev, Some(0xC1));
     }
 }

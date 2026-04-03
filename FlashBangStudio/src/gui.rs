@@ -2,16 +2,18 @@ use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::collections::HashMap;
+use std::time::Duration;
 
 use eframe::egui;
 use serialport::SerialPort;
 use tinyfiledialogs::{open_file_dialog, save_file_dialog};
 
 use crate::{
+    driver_catalog,
     protocol::{parse_device_frame, DeviceFrame},
     report::{build_report, DiffReport},
     session::{
-        list_serial_ports, open_serial_port, ChipId, HelloInfo, SerialPortEntry,
+        list_serial_ports, open_serial_port, parse_id_detail, ChipId, HelloInfo, SerialPortEntry,
     },
     verify::compute_diff,
     version,
@@ -113,6 +115,7 @@ enum ByteState {
 enum WireDirection {
     Tx,
     Rx,
+    Ui,
 }
 
 struct WireLogEntry {
@@ -128,6 +131,10 @@ pub struct FlashBangGuiApp {
     connected_port_name: Option<String>,
     serial_handle: Option<Box<dyn SerialPort>>,
     wire_log: Vec<WireLogEntry>,
+    serial_monitor_text: String,
+    available_drivers: Vec<driver_catalog::DriverEntry>,
+    selected_driver_index: usize,
+    uploaded_driver_id: Option<String>,
     show_about: bool,
     status: String,
     color_mode: ColorMode,
@@ -149,29 +156,19 @@ pub struct FlashBangGuiApp {
 }
 
 impl FlashBangGuiApp {
-    fn fallback_chip() -> ChipId {
-        ChipId {
-            manufacturer_id: 0xBF,
-            device_id: 0xB7,
-            name: "SST39SF040",
-            size_bytes: 512 * 1024,
-            sector_size: 4096,
-        }
-    }
-
-    fn ensure_fallback_chip(&mut self) {
-        if self.data.chip.is_none() {
-            self.data.chip = Some(Self::fallback_chip());
-            self.ensure_chip_buffers();
-        }
-    }
-
     fn new() -> Self {
-        let data = AppData::default();
+        const PREVIEW_SIZE: usize = 0x10000;
+
+        let mut data = AppData::default();
+        // Keep the upper GUI panes visible before a chip is identified.
+        data.ro_data = vec![0xFF; PREVIEW_SIZE];
+        data.ro_known = vec![false; PREVIEW_SIZE];
+        data.work_data = vec![0xFF; PREVIEW_SIZE];
 
         let available_ports = list_serial_ports().unwrap_or_default();
+        let available_drivers = driver_catalog::list_drivers();
 
-        let mut app = FlashBangGuiApp {
+        let app = FlashBangGuiApp {
             data,
             available_ports,
             selected_port_index: 0,
@@ -179,8 +176,12 @@ impl FlashBangGuiApp {
             connected_port_name: None,
             serial_handle: None,
             wire_log: Vec::new(),
+            serial_monitor_text: String::new(),
+            available_drivers,
+            selected_driver_index: 0,
+            uploaded_driver_id: None,
             show_about: false,
-            status: "Nicht verbunden. Verbinde ein Geraet fuer Live-Daten.".to_string(),
+            status: "Nicht verbunden. Verbinde ein Geraet fuer Live-Daten (Preview aktiv).".to_string(),
             color_mode: ColorMode::Diff,
             character_mode: CharacterMode::Hex,
             show_sector_boundaries: true,
@@ -198,29 +199,28 @@ impl FlashBangGuiApp {
             icon_assets: None,
             upper_area_ratio: 0.75,
         };
-
-        app.ensure_fallback_chip();
         app
     }
 
     fn draw_serial_monitor(&mut self, ui: &mut egui::Ui) {
         ui.separator();
-        ui.heading("Serial Monitor (TX/RX)");
+        ui.horizontal(|ui| {
+            ui.heading("Serial Monitor (TX/RX)");
+            if ui.button("Clear").clicked() {
+                self.serial_monitor_text.clear();
+            }
+            ui.label("(Text markierbar, Ctrl+X schneidet aus)");
+        });
         egui::ScrollArea::vertical()
             .id_source("serial_monitor_scroll")
             .stick_to_bottom(true)
             .show(ui, |ui| {
-                for entry in &self.wire_log {
-                    let (prefix, color) = match entry.direction {
-                        WireDirection::Tx => ("TX", egui::Color32::RED),
-                        WireDirection::Rx => ("RX", egui::Color32::GREEN),
-                    };
-                    ui.label(
-                        egui::RichText::new(format!("[{prefix}] {}", entry.text))
-                            .monospace()
-                            .color(color),
-                    );
-                }
+                ui.add(
+                    egui::TextEdit::multiline(&mut self.serial_monitor_text)
+                        .font(egui::TextStyle::Monospace)
+                        .desired_rows(10)
+                        .desired_width(f32::INFINITY),
+                );
             });
     }
 
@@ -250,19 +250,26 @@ impl FlashBangGuiApp {
     }
 
     fn chip_size(&self) -> Option<usize> {
-        self.data.chip.as_ref().map(|c| c.size_bytes as usize)
+        if let Some(chip) = self.data.chip.as_ref() {
+            Some(chip.size_bytes as usize)
+        } else if !self.data.work_data.is_empty() {
+            Some(self.data.work_data.len())
+        } else {
+            None
+        }
     }
 
     fn chip_status_text(&self) -> Option<String> {
         self.data.chip.as_ref().map(|chip| {
             format!(
-                "Chip erkannt: {} (man 0x{:02X} dev 0x{:02X} / {}K / {}B/S / {} Sectors)",
+                "Chip erkannt: {} (man 0x{:02X} dev 0x{:02X} / {}K / {}B/S / {} Sectors / driver {})",
                 chip.name,
                 chip.manufacturer_id,
                 chip.device_id,
                 chip.size_bytes / 1024,
                 chip.sector_size,
                 chip.sector_count(),
+                chip.driver_id,
             )
         })
     }
@@ -617,15 +624,50 @@ impl FlashBangGuiApp {
         }
     }
 
+    fn upload_selected_driver(&mut self) -> Result<(), String> {
+        if self.serial_handle.is_none() {
+            return Err("not connected".to_string());
+        }
+
+        let selected = self
+            .available_drivers
+            .get(self.selected_driver_index)
+            .ok_or_else(|| "no driver selected".to_string())?
+            .clone();
+        let plan = driver_catalog::build_upload_plan(&selected.path)?;
+
+        self.data
+            .log
+            .push(format!("Upload driver: {}", plan.driver_id));
+        for line in &plan.upload_lines {
+            self.send_expect_ok(line, 6)?;
+        }
+        self.uploaded_driver_id = Some(plan.driver_id.clone());
+        self.status = format!("Treiber hochgeladen: {}", plan.driver_id);
+        Ok(())
+    }
+
     fn push_wire(&mut self, direction: WireDirection, text: impl Into<String>) {
-        self.wire_log.push(WireLogEntry {
+        let entry = WireLogEntry {
             direction,
             text: text.into(),
-        });
+        };
+        let prefix = match entry.direction {
+            WireDirection::Tx => "[TX]",
+            WireDirection::Rx => "[RX]",
+            WireDirection::Ui => "[UI]",
+        };
+        self.serial_monitor_text
+            .push_str(&format!("{} {}\n", prefix, entry.text));
+        self.wire_log.push(entry);
         if self.wire_log.len() > 500 {
             let drain = self.wire_log.len() - 500;
             self.wire_log.drain(0..drain);
         }
+    }
+
+    fn log_action(&mut self, text: impl Into<String>) {
+        self.push_wire(WireDirection::Ui, text.into());
     }
 
     fn serial_send_and_read_lines(
@@ -700,12 +742,25 @@ impl FlashBangGuiApp {
                         capabilities,
                     }) = parse_device_frame(&line)
                     {
+                        if protocol_version != "0.4.1" {
+                            self.status = format!(
+                                "Protokoll nicht kompatibel: erwartet 0.4.1, erhalten {}",
+                                protocol_version
+                            );
+                            return;
+                        }
                         self.data.hello = Some(HelloInfo {
                             fw_version: fw_version.clone(),
                             protocol_version,
                             capabilities: capabilities.split(',').map(String::from).collect(),
                         });
                         self.status = format!("Firmware erkannt: {fw_version}");
+
+                        if let Err(e) = self.upload_selected_driver() {
+                            self.status = format!("Driver-Upload fehlgeschlagen: {e}");
+                            return;
+                        }
+
                         self.query_chip_id();
                         return;
                     }
@@ -727,64 +782,67 @@ impl FlashBangGuiApp {
                             continue;
                         }
 
-                        let mut mfr = 0u8;
-                        let mut dev = 0u8;
-                        let mut has_mfr = false;
-                        let mut has_dev = false;
-
-                        for kv in detail.split(',') {
-                            let mut parts = kv.splitn(2, '=');
-                            let key = parts.next().unwrap_or("").trim().to_lowercase();
-                            let value = parts
-                                .next()
-                                .unwrap_or("")
-                                .trim()
-                                .trim_start_matches("0x")
-                                .trim_start_matches("0X");
-                            if let Ok(v) = u8::from_str_radix(value, 16) {
-                                match key.as_str() {
-                                    "mf" | "manufacturer" => {
-                                        mfr = v;
-                                        has_mfr = true;
-                                    }
-                                    "dev" | "device" => {
-                                        dev = v;
-                                        has_dev = true;
-                                    }
-                                    _ => {}
-                                }
-                            }
-                        }
+                        let (mfr_opt, dev_opt) = parse_id_detail(&detail);
+                        let has_mfr = mfr_opt.is_some();
+                        let has_dev = dev_opt.is_some();
+                        let mfr = mfr_opt.unwrap_or(0);
+                        let dev = dev_opt.unwrap_or(0);
 
                         if has_mfr && has_dev {
                             if let Some(chip) = ChipId::from_ids(mfr, dev) {
+                                if let Some(uploaded) = &self.uploaded_driver_id {
+                                    if uploaded != &chip.driver_id {
+                                        self.data.chip = None;
+                                        self.data.log.push(format!(
+                                            "Driver mismatch: uploaded={}, detected={} (MFR=0x{:02X} DEV=0x{:02X})",
+                                            uploaded, chip.driver_id, mfr, dev
+                                        ));
+                                        self.status = format!(
+                                            "Treiber passt nicht zum Chip: hochgeladen={}, erkannt={}. Bitte passenden Treiber waehlen und neu hochladen.",
+                                            uploaded, chip.driver_id
+                                        );
+                                        return;
+                                    }
+                                }
+
+                                let chip_size_cmd =
+                                    format!("PARAMETER|CHIP_SIZE|{:X}", chip.size_bytes);
+                                if let Err(e) = self.send_expect_ok(&chip_size_cmd, 6) {
+                                    self.status = format!(
+                                        "Chip erkannt, aber CHIP_SIZE-Update fehlgeschlagen: {e}"
+                                    );
+                                    return;
+                                }
+
                                 self.data.chip = Some(chip.clone());
                                 self.ensure_chip_buffers();
                                 self.data.log.push(format!(
-                                    "ID: {} (MFR=0x{:02X} DEV=0x{:02X})",
-                                    chip.name, chip.manufacturer_id, chip.device_id
+                                    "ID: {} (MFR=0x{:02X} DEV=0x{:02X}, driver={})",
+                                    chip.name, chip.manufacturer_id, chip.device_id, chip.driver_id
                                 ));
                                 self.status = format!("Chip erkannt: {}", chip.name);
                             } else {
-                                self.ensure_fallback_chip();
+                                self.data.chip = None;
                                 self.data.log.push(format!(
                                     "ID unknown: MFR=0x{:02X} DEV=0x{:02X}",
                                     mfr, dev
                                 ));
-                                self.status =
-                                    format!("Chip nicht erkannt: MFR=0x{:02X} DEV=0x{:02X} (Fallback aktiv)", mfr, dev);
+                                self.status = format!(
+                                    "Chip nicht im Driver-Katalog: MFR=0x{:02X} DEV=0x{:02X}",
+                                    mfr, dev
+                                );
                             }
                         }
                         return;
                     }
                 }
 
-                self.ensure_fallback_chip();
-                self.status = "Keine verwertbare ID-Antwort erhalten (Fallback aktiv)".to_string();
+                self.data.chip = None;
+                self.status = "Keine verwertbare ID-Antwort erhalten".to_string();
             }
             Err(e) => {
-                self.ensure_fallback_chip();
-                self.status = format!("ID-Abfrage fehlgeschlagen: {e} (Fallback aktiv)");
+                self.data.chip = None;
+                self.status = format!("ID-Abfrage fehlgeschlagen: {e}");
             }
         }
     }
@@ -803,7 +861,72 @@ impl FlashBangGuiApp {
         Err("no OK frame received".to_string())
     }
 
+    fn read_single_byte(&mut self, addr: usize) -> Result<u8, String> {
+        let cmd = format!("READ|{addr:05X}|1");
+        let lines = self.send_expect_ok(&cmd, 8)?;
+        for line in lines {
+            let Ok(frame) = parse_device_frame(&line) else {
+                continue;
+            };
+            if let DeviceFrame::DataHex { address, data, .. } = frame {
+                if address as usize == addr && !data.is_empty() {
+                    return Ok(data[0]);
+                }
+            }
+        }
+        Err("readback failed: no DATA frame".to_string())
+    }
+
+    fn read_single_byte_stable(&mut self, addr: usize, expected: u8) -> Result<u8, String> {
+        // Some devices may briefly expose transitional values directly after
+        // PROGRAM_BYTE. Require two consecutive expected reads with short retries.
+        const VERIFY_ATTEMPTS: usize = 8;
+        const VERIFY_DELAY_MS: u64 = 1;
+
+        let mut last = self.read_single_byte(addr)?;
+        if last == expected {
+            let confirm = self.read_single_byte(addr)?;
+            if confirm == expected {
+                return Ok(confirm);
+            }
+            last = confirm;
+        }
+
+        for _ in 0..VERIFY_ATTEMPTS {
+            std::thread::sleep(Duration::from_millis(VERIFY_DELAY_MS));
+            let a = self.read_single_byte(addr)?;
+            let b = self.read_single_byte(addr)?;
+            last = b;
+            if a == expected && b == expected {
+                return Ok(b);
+            }
+        }
+
+        Ok(last)
+    }
+
     fn dump_range_to_ro(&mut self, start: usize, len: usize) -> Result<(), String> {
+        if let (Some(chip), Some(uploaded)) = (&self.data.chip, &self.uploaded_driver_id) {
+            if &chip.driver_id != uploaded {
+                return Err(format!(
+                    "driver mismatch: uploaded={}, detected={}. Please upload matching driver first.",
+                    uploaded, chip.driver_id
+                ));
+            }
+        }
+
+        let chip_size = self
+            .chip_size()
+            .ok_or_else(|| "chip unknown - cannot fetch".to_string())?;
+        if len == 0 {
+            return Err("fetch length must be > 0".to_string());
+        }
+        if start >= chip_size || start + len > chip_size {
+            return Err(format!(
+                "fetch range out of bounds: start=0x{start:05X} len={len} chip_size={chip_size}"
+            ));
+        }
+
         self.ensure_chip_buffers();
         let max_lines = (len / 16) + 64;
         let cmd = format!("READ|{start:05X}|{len}");
@@ -1122,7 +1245,9 @@ impl FlashBangGuiApp {
 
         let mut has_gray = false;
         let mut red_sector: Option<usize> = None;
-        let sector_size = self.sector_size().unwrap_or(4096);
+        let sector_size = self
+            .sector_size()
+            .ok_or_else(|| "chip unknown - cannot flash".to_string())?;
 
         for addr in start..start + len {
             match self.byte_state(addr) {
@@ -1136,40 +1261,80 @@ impl FlashBangGuiApp {
         }
 
         if let Some(sector) = red_sector {
+            self.log_action(format!(
+                "Flash blocked: red bytes present (erase required), first red sector={sector}"
+            ));
             return Err(format!(
                 "flash refused: sector {sector} needs erase (red bytes present)"
             ));
         }
 
         if has_gray && !self.allow_flash_gray {
+            self.log_action(
+                "Flash blocked: gray bytes present and 'Allow Flash on gray' is disabled".to_string(),
+            );
             return Err(
                 "flash warning: target includes gray (stale) bytes. Fetch first or enable 'Allow Flash on gray'."
                     .to_string(),
             );
         }
 
+        self.log_action(format!(
+            "Flash start: range=0x{start:05X}+{len} allow_gray={}"
+            , self.allow_flash_gray
+        ));
+
         let mut flashed = 0usize;
+        let mut skipped_equal = 0usize;
+        let mut programmed_unknown = 0usize;
+        let mut programmed_changed = 0usize;
         for addr in start..start + len {
             let work = self.data.work_data[addr];
             let known = self.data.ro_known[addr];
             let ro = self.data.ro_data[addr];
             if known && ro == work {
+                skipped_equal += 1;
                 continue;
             }
             let cmd = format!("PROGRAM_BYTE|{addr:05X}|{work:02X}");
             self.send_expect_ok(&cmd, 6)?;
+
+            let read_back = self.read_single_byte_stable(addr, work)?;
+            if read_back != work {
+                self.log_action(format!(
+                    "Flash verify mismatch: addr=0x{addr:05X} expected=0x{work:02X} observed=0x{read_back:02X}"
+                ));
+                return Err(format!(
+                    "flash verify mismatch at 0x{addr:05X}: expected 0x{work:02X}, observed 0x{read_back:02X}"
+                ));
+            }
+
             flashed += 1;
+            if known {
+                programmed_changed += 1;
+            } else {
+                programmed_unknown += 1;
+            }
         }
 
         self.mark_ro_unknown(start, len);
-        self.status = format!("Flashed {flashed} byte(s). Inspector marked stale/gray in affected range.");
+        let total = len;
+        self.log_action(format!(
+            "Flash done: total={} programmed={} skipped_equal={} programmed_changed={} programmed_unknown={} verify_failures=0",
+            total, flashed, skipped_equal, programmed_changed, programmed_unknown
+        ));
+        self.status = format!(
+            "Flash done: total={total}, programmed={flashed}, skipped_equal={skipped_equal}, changed={programmed_changed}, unknown={programmed_unknown}, verify_failures=0. Inspector marked stale/gray in affected range."
+        );
         Ok(())
     }
 
     fn erase_sector(&mut self, start: usize) -> Result<(), String> {
         let cmd = format!("SECTOR_ERASE|{start:05X}");
         self.send_expect_ok(&cmd, 6)?;
-        let sector_size = self.sector_size().unwrap_or(4096);
+        let sector_size = self
+            .sector_size()
+            .ok_or_else(|| "chip unknown - cannot erase sector".to_string())?;
         self.mark_ro_unknown(start, sector_size);
         self.status = format!("Erased sector at 0x{start:05X}. Inspector marked stale/gray.");
         Ok(())
@@ -1177,7 +1342,9 @@ impl FlashBangGuiApp {
 
     fn erase_chip(&mut self) -> Result<(), String> {
         self.send_expect_ok("CHIP_ERASE", 6)?;
-        let chip_size = self.chip_size().unwrap_or(0);
+        let chip_size = self
+            .chip_size()
+            .ok_or_else(|| "chip unknown - cannot erase chip".to_string())?;
         self.mark_ro_unknown(0, chip_size);
         self.status = "Chip erased. Entire Inspector view marked stale/gray.".to_string();
         Ok(())
@@ -1292,9 +1459,9 @@ impl FlashBangGuiApp {
                                     format!("S{:03}", sector_idx)
                                 };
                                 let sector_color = if is_active_sector {
-                                    egui::Color32::from_rgb(96, 208, 255)
+                                    egui::Color32::from_rgb(70, 10, 10)
                                 } else {
-                                    egui::Color32::from_rgb(255, 230, 120)
+                                    egui::Color32::from_rgb(120, 120, 120)
                                 };
                                 ui.add_sized(
                                     [34.0, row_height],
@@ -1419,6 +1586,7 @@ impl eframe::App for FlashBangGuiApp {
         let mut do_connect = false;
         let mut do_disconnect = false;
         let mut do_query_fw = false;
+        let mut do_upload_driver = false;
 
         egui::TopBottomPanel::top("top_bar").show(ctx, |ui| {
             ui.horizontal(|ui| {
@@ -1473,14 +1641,43 @@ impl eframe::App for FlashBangGuiApp {
                     }
                 });
 
+                ui.separator();
+                ui.label("Treiber:");
+                let selected_driver = self
+                    .available_drivers
+                    .get(self.selected_driver_index)
+                    .map(|d| d.id.as_str())
+                    .unwrap_or("<none>");
+                egui::ComboBox::from_id_source("driver_combo")
+                    .selected_text(selected_driver)
+                    .width(200.0)
+                    .show_ui(ui, |ui| {
+                        for (idx, d) in self.available_drivers.iter().enumerate() {
+                            ui.selectable_value(&mut self.selected_driver_index, idx, d.id.clone());
+                        }
+                    });
+                if ui.button("Refresh Driver").clicked() {
+                    self.available_drivers = driver_catalog::list_drivers();
+                    if self.selected_driver_index >= self.available_drivers.len() {
+                        self.selected_driver_index = 0;
+                    }
+                }
+                if self.serial_handle.is_some() && ui.button("Upload Driver + ID").clicked() {
+                    self.log_action("Button: Upload Driver + ID");
+                    do_upload_driver = true;
+                }
+
                 if self.serial_handle.is_some() {
                     if ui.button("Firmware abfragen").clicked() {
+                        self.log_action("Button: Firmware abfragen");
                         do_query_fw = true;
                     }
                     if ui.button("Disconnect").clicked() {
+                        self.log_action("Button: Disconnect");
                         do_disconnect = true;
                     }
                 } else if ui.button("Connect").clicked() {
+                    self.log_action("Button: Connect");
                     do_connect = true;
                 }
 
@@ -1506,6 +1703,10 @@ impl eframe::App for FlashBangGuiApp {
             if let Some(port) = selected_port {
                 match open_serial_port(&port.name, self.baud_rate, 300) {
                     Ok(handle) => {
+                        if self.available_drivers.is_empty() {
+                            self.status = "Kein Treiber gefunden. Bitte 'Refresh Driver' pruefen.".to_string();
+                            return;
+                        }
                         self.push_wire(
                             WireDirection::Tx,
                             format!("<open {} @ {}>", port.name, self.baud_rate),
@@ -1528,6 +1729,14 @@ impl eframe::App for FlashBangGuiApp {
 
         if do_query_fw {
             self.query_firmware_version();
+        }
+
+        if do_upload_driver {
+            if let Err(e) = self.upload_selected_driver() {
+                self.status = format!("Driver-Upload fehlgeschlagen: {e}");
+            } else {
+                self.query_chip_id();
+            }
         }
 
         self.handle_workspace_typing(ctx);
@@ -1720,10 +1929,14 @@ impl FlashBangGuiApp {
                                         },
                                         "Fetch Image (Chip -> Inspector)",
                                     ).clicked() {
+                                            self.log_action("Button: Fetch Image");
                                         if let Some(size) = self.chip_size() {
                                             if let Err(e) = self.dump_range_to_ro(0, size) {
                                                 self.status = format!("Fetch image failed: {e}");
                                             }
+                                        } else {
+                                            self.status =
+                                                "Fetch image failed: kein erkannter Chip".to_string();
                                         }
                                     }
                                     if self.operation_button(
@@ -1739,6 +1952,10 @@ impl FlashBangGuiApp {
                                         },
                                         "Fetch Range (Chip+R -> Inspector+R)",
                                     ).clicked() {
+                                            self.log_action(format!(
+                                                "Button: Fetch Range (start={} len={})",
+                                                self.range_start_input, self.range_len_input
+                                            ));
                                         match self.parse_range_input() {
                                             Ok((start, len)) => {
                                                 if let Err(e) = self.dump_range_to_ro(start, len) {
@@ -1761,6 +1978,7 @@ impl FlashBangGuiApp {
                                         },
                                         "Fetch Sector (Chip+S -> Inspector+S)",
                                     ).clicked() {
+                                            self.log_action(format!("Button: Fetch Sector (sector={})", self.sector_input));
                                         match self.parse_sector_input() {
                                             Ok((_idx, start, size)) => {
                                                 if let Err(e) = self.dump_range_to_ro(start, size) {
@@ -1783,6 +2001,7 @@ impl FlashBangGuiApp {
                                         },
                                         "Erase Image (Chip -> Trash)",
                                     ).clicked() {
+                                            self.log_action("Button: Erase Image");
                                         if let Err(e) = self.erase_chip() {
                                             self.status = format!("Erase all failed: {e}");
                                         }
@@ -1800,6 +2019,7 @@ impl FlashBangGuiApp {
                                         },
                                         "Erase Sector (Chip+S -> Trash)",
                                     ).clicked() {
+                                            self.log_action(format!("Button: Erase Sector (sector={})", self.sector_input));
                                         match self.parse_sector_input() {
                                             Ok((_idx, start, _size)) => {
                                                 if let Err(e) = self.erase_sector(start) {
@@ -1837,6 +2057,7 @@ impl FlashBangGuiApp {
                                     },
                                     "Copy Image (Inspector -> Workbench)",
                                 ).clicked() {
+                                    self.log_action("Button: Copy Image");
                                     if let Some(size) = self.chip_size() {
                                         if let Err(e) = self.copy_ro_into_work(0, size) {
                                             self.status = format!("Copy all failed: {e}");
@@ -1856,6 +2077,7 @@ impl FlashBangGuiApp {
                                     },
                                     "Copy Sector (Inspector+S -> Workbench+S)",
                                 ).clicked() {
+                                    self.log_action(format!("Button: Copy Sector (sector={})", self.sector_input));
                                     match self.parse_sector_input() {
                                         Ok((_idx, start, size)) => {
                                             if let Err(e) = self.copy_ro_into_work(start, size) {
@@ -1878,6 +2100,10 @@ impl FlashBangGuiApp {
                                     },
                                     "Copy Range (Inspector+R -> Workbench+R)",
                                 ).clicked() {
+                                    self.log_action(format!(
+                                        "Button: Copy Range (start={} len={})",
+                                        self.range_start_input, self.range_len_input
+                                    ));
                                     match self.parse_range_input() {
                                         Ok((start, len)) => {
                                             if let Err(e) = self.copy_ro_into_work(start, len) {
@@ -1903,6 +2129,7 @@ impl FlashBangGuiApp {
                                     },
                                     "Flash Image (Chip <- Workbench)",
                                 ).clicked() {
+                                    self.log_action("Button: Flash Image");
                                     if let Some(size) = self.chip_size() {
                                         if let Err(e) = self.flash_range_from_work(0, size) {
                                             self.status = format!("Flash all failed: {e}");
@@ -1922,6 +2149,7 @@ impl FlashBangGuiApp {
                                     },
                                     "Flash Sector (Chip+S <- Workbench+S)",
                                 ).clicked() {
+                                    self.log_action(format!("Button: Flash Sector (sector={})", self.sector_input));
                                     match self.parse_sector_input() {
                                         Ok((_idx, start, size)) => {
                                             if let Err(e) = self.flash_range_from_work(start, size) {
@@ -1944,6 +2172,10 @@ impl FlashBangGuiApp {
                                     },
                                     "Flash Range (Chip+R <- Workbench+R)",
                                 ).clicked() {
+                                    self.log_action(format!(
+                                        "Button: Flash Range (start={} len={})",
+                                        self.range_start_input, self.range_len_input
+                                    ));
                                     match self.parse_range_input() {
                                         Ok((start, len)) => {
                                             if let Err(e) = self.flash_range_from_work(start, len) {
@@ -1991,6 +2223,7 @@ impl FlashBangGuiApp {
                                         },
                                         "Load Image (Disk -> Workbench)",
                                     ).clicked() {
+                                            self.log_action("Button: Load Image");
                                         if self.choose_open_file() {
                                             if let Err(e) = self.load_file_into_work(0, None) {
                                                 self.status = e;
@@ -2012,6 +2245,7 @@ impl FlashBangGuiApp {
                                         },
                                         "Load Sector (Disk+S -> Workbench+S)",
                                     ).clicked() {
+                                            self.log_action(format!("Button: Load Sector (sector={})", self.sector_input));
                                         if self.choose_open_file() {
                                             match self.parse_sector_input() {
                                                 Ok((_idx, start, size)) => {
@@ -2038,6 +2272,7 @@ impl FlashBangGuiApp {
                                         },
                                         "Save Image (Workbench -> Disk)",
                                     ).clicked() {
+                                            self.log_action("Button: Save Image");
                                         if self.file_path_input.trim().is_empty() && !self.choose_save_file("rom_inspector.bin") {
                                             self.status = "Save cancelled".to_string();
                                         } else {
@@ -2064,6 +2299,7 @@ impl FlashBangGuiApp {
                                         },
                                         "Save Sector (Workbench+S -> Disk+S)",
                                     ).clicked() {
+                                            self.log_action(format!("Button: Save Sector (sector={})", self.sector_input));
                                         match self.parse_sector_input() {
                                             Ok((_idx, start, size)) => {
                                                 let previous = self.file_path_input.clone();

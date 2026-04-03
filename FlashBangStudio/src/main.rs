@@ -1,4 +1,5 @@
 mod mock_device;
+mod driver_catalog;
 mod protocol;
 mod report;
 mod session;
@@ -51,7 +52,7 @@ fn main() {
         eprintln!("failed to write report: {e}");
     }
 
-    if let Ok(frame) = parse_device_frame("HELLO|flashbang-fw-dev-0.3.0|0.1|sst39-core,data-hex") {
+    if let Ok(frame) = parse_device_frame("HELLO|flashbang-fw-dev-0.4.1|0.4.1|driver-upload") {
         println!("parsed frame: {frame:?}");
     }
 }

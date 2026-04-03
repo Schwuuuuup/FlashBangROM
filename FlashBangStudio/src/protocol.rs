@@ -138,7 +138,7 @@ mod tests {
 
     #[test]
     fn parses_hello_frame() {
-        let f = parse_device_frame("HELLO|flashbang-fw-dev-0.3.0|0.1|sst39-core,data-hex")
+        let f = parse_device_frame("HELLO|flashbang-fw-dev-0.4.1|0.4.1|driver-upload")
             .expect("hello should parse");
         match f {
             DeviceFrame::Hello {
@@ -146,9 +146,9 @@ mod tests {
                 protocol_version,
                 capabilities,
             } => {
-                assert_eq!(fw_version, "flashbang-fw-dev-0.3.0");
-                assert_eq!(protocol_version, "0.1");
-                assert_eq!(capabilities, "sst39-core,data-hex");
+                assert_eq!(fw_version, "flashbang-fw-dev-0.4.1");
+                assert_eq!(protocol_version, "0.4.1");
+                assert_eq!(capabilities, "driver-upload");
             }
             _ => panic!("unexpected frame"),
         }

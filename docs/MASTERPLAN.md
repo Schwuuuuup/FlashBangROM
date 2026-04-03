@@ -140,6 +140,10 @@ This file is the single source of truth for long-term project direction, durable
 ## Protocol Requirements
 - The protocol must remain deterministic and easy to parse in firmware and host code.
 - Protocol versioning is mandatory to prevent Studio/Firmware drift.
+- Chip-identification responsibility is split by design:
+	- Firmware must only return raw ID bytes (manufacturer/device) from currently loaded `ID_ENTRY`/`ID_READ`/`ID_EXIT` sequences.
+	- Host application and test tooling must map/validate chip model identity from those raw bytes.
+	- Firmware must not hardcode family/model mapping for SST39/Winbond in the `ID` response path.
 - Current handshake requirement:
 	- host sends `HELLO|<host-version>|<protocol-version>`
 	- device responds `HELLO|<fw-version>|<protocol-version>|<capabilities>`
@@ -184,6 +188,7 @@ This file is the single source of truth for long-term project direction, durable
 - GUI work is allowed to progress in mock/demo mode before full hardware integration is finished.
 - Repository structure is fixed to root-level `FlashBangFirmware/` (firmware) and `FlashBangStudio/` (desktop app); an extra `host/` layer is intentionally removed.
 - Chip descriptors in `drivers/` are the canonical registry for supported IDs/capabilities, while firmware currently uses compile-time probe routines; runtime YAML parsing on MCU is not part of the current baseline.
+- GUI-/Host-Validierung muss dauerhaft mit mindestens zwei Chip-Deskriptoren in `drivers/chips/` erfolgen (SST39 + Winbond W29EE011), damit chip-spezifische Unterschiede in Größe/Adressbreite/Sequenzen ohne Firmware-Umbau testbar bleiben.
 - Terminology is now fixed project-wide for UI/Docs/Protocol labels:
 	- Chip read operations must be called `Fetch`. `Dump` is deprecated and should be replaced in UI/docs.
 	- Chip write/program operations must be called `Flash`. "Write" is ambiguous and should be avoided in user-facing wording.
@@ -247,6 +252,8 @@ This file is the single source of truth for long-term project direction, durable
 - ROM-less bench testing can produce false-positive `OK` results for SST39 write/erase/status operations (floating bus/no-chip conditions); firmware requires explicit chip-presence/plausibility checks before trusting completion polling.
 - Address-line float regressions are a known high-impact failure mode: do not rely on numeric `for (pin = X; pin <= Y; ++pin)` initialization for bus-critical GPIO configuration. Address and data bus pins must be initialized via explicit pin lists, and address pins must be re-asserted as `OUTPUT` before driving a new address value.
 - Before any SST39 ID/read/program investigation, run an address-bus sanity check (`ADDR_BUS_TEST|A0_7`, then `A8_15`, then `A16_18`) to prove deterministic toggling and avoid misdiagnosing wiring/init faults as chip-protocol failures.
+- Für Protokoll-/GUI-Diagnose ist skriptgesteuerter Serial-I/O (z. B. `inspect_roundtrip.py`) die Referenz; manuelle Terminal-Paste ist nicht als alleinige Fehlerquelle-Bewertung geeignet.
+- Burst-Replay hat gezeigt: RX-Parsing kann stabil sein, während unter Last einzelne TX-Antworten gekürzt/fragmentiert ankommen. GUI/Host-Seite muss daher weiterhin robust gegen unvollständige Zeilen bleiben und solche Frames als Transportartefakte markieren statt als gültige Protokollantworten zu behandeln.
 
 ## Constraints And Environment
 - Hardware constraints:

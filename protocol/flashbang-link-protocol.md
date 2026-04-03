@@ -1,4 +1,4 @@
-# FlashBang Link Protocol v0.1 (Draft)
+# FlashBang Link Protocol v0.4.1
 
 ## Goals
 - Keep parser deterministic and testable.
@@ -104,5 +104,5 @@ Exit:
 ## Notes
 - This draft intentionally keeps line-based framing for easier bring-up.
 - Current data payload framing is hex (`DATA|...|<hex-bytes>`) for deterministic parser/testing bring-up.
-- Binary-safe framing upgrade (base64 or framed binary) can be introduced in protocol v0.2.
+- Binary-safe framing upgrade (base64 or framed binary) can be introduced in a future protocol minor version.
 - Chip protocol details are tracked in `docs/SST39_CHIP_PROTOCOL_NOTES.md`.

@@ -4,9 +4,13 @@
 
 #include "device_globals.h"
 
+String g_rawLine;
+
 bool parseHex32(const String& text, uint32_t& out) {
+  String normalized = text;
+  normalized.trim();
   char* endPtr = nullptr;
-  unsigned long parsed = strtoul(text.c_str(), &endPtr, 16);
+  unsigned long parsed = strtoul(normalized.c_str(), &endPtr, 16);
   if (endPtr == nullptr || *endPtr != '\0') {
     return false;
   }
@@ -15,8 +19,10 @@ bool parseHex32(const String& text, uint32_t& out) {
 }
 
 bool parseDec32(const String& text, uint32_t& out) {
+  String normalized = text;
+  normalized.trim();
   char* endPtr = nullptr;
-  unsigned long parsed = strtoul(text.c_str(), &endPtr, 10);
+  unsigned long parsed = strtoul(normalized.c_str(), &endPtr, 10);
   if (endPtr == nullptr || *endPtr != '\0') {
     return false;
   }
@@ -25,13 +31,26 @@ bool parseDec32(const String& text, uint32_t& out) {
 }
 
 bool parseLine(const String& line, CommandContext& ctx) {
-  String normalized = line;
-  normalized.trim();
-  normalized.toUpperCase();
+  String trimmed = line;
+  trimmed.trim();
 
-  if (normalized.length() == 0) {
+  if (trimmed.length() == 0) {
     return false;
   }
+
+  // Save raw line for commands that need case-sensitive input
+  g_rawLine = trimmed;
+
+  // Lowercase first char → custom sequence dispatch (bit 5 check)
+  char first = trimmed.charAt(0);
+  if (first >= 'a' && first <= 'z') {
+    ctx.cmd = CommandType::CustomSequence;
+    return true;
+  }
+
+  // Normalize to uppercase for built-in command matching
+  String normalized = trimmed;
+  normalized.toUpperCase();
 
   if (normalized == "?") {
     ctx.cmd = CommandType::Help;
@@ -47,6 +66,14 @@ bool parseLine(const String& line, CommandContext& ctx) {
   }
   if (normalized == "CHIP_ERASE") {
     ctx.cmd = CommandType::ChipErase;
+    return true;
+  }
+  if (normalized == "INSPECT") {
+    ctx.cmd = CommandType::Inspect;
+    return true;
+  }
+  if (normalized == "DRIVER_RESET") {
+    ctx.cmd = CommandType::DriverReset;
     return true;
   }
   if (normalized == "DATA_BUS_MONITOR_START") {
@@ -79,16 +106,31 @@ bool parseLine(const String& line, CommandContext& ctx) {
     return false;
   }
   String op = normalized.substring(0, p1);
+  op.trim();
+
+  if (op == "SEQUENCE") {
+    // SEQUENCE|name|script — need raw line for case-sensitive name + script
+    ctx.cmd = CommandType::Sequence;
+    return true;
+  }
+
+  if (op == "PARAMETER") {
+    // PARAMETER|key|value — need raw line for case-sensitive key
+    ctx.cmd = CommandType::Parameter;
+    return true;
+  }
 
   if (op == "READ") {
     int p2 = normalized.indexOf('|', p1 + 1);
     if (p2 < 0) {
       return false;
     }
-    if (!parseHex32(normalized.substring(p1 + 1, p2), ctx.addr)) {
+    String addrText = normalized.substring(p1 + 1, p2);
+    String lenText = normalized.substring(p2 + 1);
+    if (!parseHex32(addrText, ctx.addr)) {
       return false;
     }
-    if (!parseDec32(normalized.substring(p2 + 1), ctx.len)) {
+    if (!parseDec32(lenText, ctx.len)) {
       return false;
     }
     ctx.cmd = CommandType::Read;
@@ -101,10 +143,12 @@ bool parseLine(const String& line, CommandContext& ctx) {
     if (p2 < 0) {
       return false;
     }
-    if (!parseHex32(normalized.substring(p1 + 1, p2), ctx.addr)) {
+    String addrText = normalized.substring(p1 + 1, p2);
+    String valueText = normalized.substring(p2 + 1);
+    if (!parseHex32(addrText, ctx.addr)) {
       return false;
     }
-    if (!parseHex32(normalized.substring(p2 + 1), value)) {
+    if (!parseHex32(valueText, value)) {
       return false;
     }
     ctx.value = static_cast<uint8_t>(value & 0xFF);
@@ -113,7 +157,8 @@ bool parseLine(const String& line, CommandContext& ctx) {
   }
 
   if (op == "SECTOR_ERASE") {
-    if (!parseHex32(normalized.substring(p1 + 1), ctx.addr)) {
+    String addrText = normalized.substring(p1 + 1);
+    if (!parseHex32(addrText, ctx.addr)) {
       return false;
     }
     ctx.cmd = CommandType::SectorErase;
@@ -127,13 +172,16 @@ bool parseLine(const String& line, CommandContext& ctx) {
     if (p2 < 0 || p3 < 0) {
       return false;
     }
-    if (!parseHex32(normalized.substring(p1 + 1, p2), ctx.addr)) {
+    String addrText = normalized.substring(p1 + 1, p2);
+    String expectedText = normalized.substring(p2 + 1, p3);
+    String timeoutText = normalized.substring(p3 + 1);
+    if (!parseHex32(addrText, ctx.addr)) {
       return false;
     }
-    if (!parseHex32(normalized.substring(p2 + 1, p3), expected)) {
+    if (!parseHex32(expectedText, expected)) {
       return false;
     }
-    if (!parseDec32(normalized.substring(p3 + 1), ctx.timeoutMs)) {
+    if (!parseDec32(timeoutText, ctx.timeoutMs)) {
       return false;
     }
     ctx.value = static_cast<uint8_t>(expected & 0xFF);
@@ -143,6 +191,7 @@ bool parseLine(const String& line, CommandContext& ctx) {
 
   if (op == "ADDR_BUS_TEST") {
     String bank = normalized.substring(p1 + 1);
+    bank.trim();
     if (bank == "A0_7" || bank == "LOW8") {
       ctx.bank = 0;
     } else if (bank == "A8_15" || bank == "HIGH8") {

@@ -33,8 +33,8 @@ impl MockDevice {
     pub fn handle(&self, cmd: &str) -> Vec<String> {
         let parts: Vec<&str> = cmd.trim().split_whitespace().collect();
         match parts.first().copied().unwrap_or("") {
-            "HELLO" => vec!["HELLO|flashbang-mock-0.3.0|0.1|sst39-core,data-hex".to_string()],
-            "ID" => vec!["OK|ID|manufacturer=0xBF,device=0xB7".to_string()],
+            "HELLO" => vec!["HELLO|flashbang-mock-0.4.1|0.4.1|driver-upload".to_string()],
+            "ID" => vec!["OK|ID|mf=0xBF,dev=0xB7".to_string()],
             "READ" => self.handle_read(&parts),
             "ERASE_SECTOR" => vec!["OK|ERASE_SECTOR|done".to_string()],
             "ERASE_CHIP" => vec!["OK|ERASE_CHIP|done".to_string()],

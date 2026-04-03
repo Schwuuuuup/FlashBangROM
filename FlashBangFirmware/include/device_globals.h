@@ -13,5 +13,7 @@ extern bool g_dataBusMonitorActive;
 extern uint32_t g_dataBusMonitorLastSampleMs;
 extern uint32_t g_dataBusMonitorAddr;
 extern bool g_dataBusMonitorAddrSet;
+extern bool g_inspectPasteActive;
+extern DriverSlot g_driverSlot;
 
 void resetContext();
