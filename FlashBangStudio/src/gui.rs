@@ -129,6 +129,21 @@ enum WarningAction {
 }
 
 #[derive(Clone)]
+enum DeferredAction {
+    Connect,
+    QueryFirmware,
+    UploadDriverAndId,
+    FetchImage,
+    FetchRange { start: usize, len: usize },
+    FetchSector { start: usize, size: usize },
+    EraseImage,
+    EraseSector { start: usize },
+    FlashImage,
+    FlashRange { start: usize, len: usize },
+    FlashSector { start: usize, size: usize },
+}
+
+#[derive(Clone)]
 struct WarningDialogState {
     message: String,
     action: Option<WarningAction>,
@@ -148,11 +163,17 @@ pub struct FlashBangGuiApp {
     uploaded_driver_id: Option<String>,
     show_about: bool,
     warning_dialog: Option<WarningDialogState>,
+    is_busy: bool,
+    busy_action: Option<String>,
+    pending_action: Option<DeferredAction>,
+    pending_action_armed: bool,
     status: String,
     color_mode: ColorMode,
     character_mode: CharacterMode,
     show_sector_boundaries: bool,
     allow_flash_gray: bool,
+    auto_fetch: bool,
+    pending_connect_auto_fetch: bool,
     range_start_input: String,
     range_len_input: String,
     sector_input: String,
@@ -210,13 +231,19 @@ impl FlashBangGuiApp {
             uploaded_driver_id: None,
             show_about: false,
             warning_dialog: None,
+            is_busy: false,
+            busy_action: None,
+            pending_action: None,
+            pending_action_armed: false,
             status: "Nicht verbunden. Verbinde ein Geraet fuer Live-Daten (Preview aktiv).".to_string(),
             color_mode: ColorMode::Diff,
             character_mode: CharacterMode::Hex,
             show_sector_boundaries: true,
             allow_flash_gray: false,
-            range_start_input: "00000".to_string(),
-            range_len_input: "256".to_string(),
+            auto_fetch: true,
+            pending_connect_auto_fetch: false,
+            range_start_input: "".to_string(),
+            range_len_input: "".to_string(),
             sector_input: "0".to_string(),
             file_path_input: "captures/rom_inspector.bin".to_string(),
             clipboard: Vec::new(),
@@ -392,6 +419,16 @@ impl FlashBangGuiApp {
         self.rebuild_diff_report();
     }
 
+    fn reset_inspector_buffers(&mut self) {
+        if self.data.ro_data.is_empty() || self.data.ro_known.is_empty() {
+            return;
+        }
+        self.data.ro_data.fill(0xFF);
+        self.data.ro_known.fill(false);
+        self.selected_ro_addr = None;
+        self.rebuild_diff_report();
+    }
+
     fn byte_state(&self, addr: usize) -> ByteState {
         if addr >= self.data.ro_data.len() || addr >= self.data.work_data.len() {
             return ByteState::Gray;
@@ -418,29 +455,50 @@ impl FlashBangGuiApp {
     }
 
     fn can_flash_range(&self, start: usize, len: usize) -> bool {
-        if self.serial_handle.is_none() || self.data.chip.is_none() {
-            return false;
+        self.flash_disable_reason(start, len).is_none()
+    }
+
+    fn flash_disable_reason(&self, start: usize, len: usize) -> Option<String> {
+        let mut reasons: Vec<&str> = Vec::new();
+
+        if self.serial_handle.is_none() {
+            reasons.push("Not Connected");
+        }
+        if self.data.chip.is_none() {
+            reasons.push("Kein erkannter Chip");
         }
         if len == 0 || start + len > self.data.work_data.len() {
-            return false;
+            reasons.push("Ungueltiger Bereich");
         }
         if self.sector_size().is_none() {
-            return false;
+            reasons.push("Sektor-Geometrie unbekannt");
+        }
+
+        if !reasons.is_empty() {
+            return Some(reasons.join(" | "));
         }
 
         let mut has_gray = false;
         for addr in start..start + len {
             match self.byte_state(addr) {
-                ByteState::Red => return false,
+                ByteState::Red => {
+                    reasons.push("Nicht programmierbar (rote Bytes vorhanden)");
+                    break;
+                }
                 ByteState::Gray => has_gray = true,
                 _ => {}
             }
         }
 
         if has_gray && !self.allow_flash_gray {
-            return false;
+            reasons.push("Unbekannte Bytes (erst Fetch oder 'Allow Flash on gray')");
         }
-        true
+
+        if reasons.is_empty() {
+            None
+        } else {
+            Some(reasons.join(" | "))
+        }
     }
 
     fn diff_color_for_state(state: ByteState) -> egui::Color32 {
@@ -772,6 +830,78 @@ impl FlashBangGuiApp {
         });
     }
 
+    fn queue_action(&mut self, ctx: &egui::Context, label: &str, action: DeferredAction) {
+        if self.is_busy {
+            return;
+        }
+        self.is_busy = true;
+        self.busy_action = Some(label.to_string());
+        self.status = format!("Laufend: {label}");
+        self.log_action(format!("Action queued: {label}"));
+        self.pending_action = Some(action);
+        self.pending_action_armed = true;
+        ctx.request_repaint();
+    }
+
+    fn execute_deferred_action(&mut self) -> Result<(), String> {
+        let action = self
+            .pending_action
+            .take()
+            .ok_or_else(|| "no deferred action".to_string())?;
+        match action {
+            DeferredAction::Connect => {
+                let selected_port = self.available_ports.get(self.selected_port_index).cloned();
+                let Some(port) = selected_port else {
+                    self.status = "No serial port selected".to_string();
+                    return Err("no serial port selected".to_string());
+                };
+                let handle = open_serial_port(&port.name, self.baud_rate, 300)
+                    .map_err(|e| format!("connect failed: {e}"))?;
+                if self.available_drivers.is_empty() {
+                    self.status = "Kein Treiber gefunden. Bitte 'Refresh Driver' pruefen.".to_string();
+                    return Err("no drivers available".to_string());
+                }
+                self.push_wire(
+                    WireDirection::Tx,
+                    format!("<open {} @ {}>", port.name, self.baud_rate),
+                );
+                self.serial_handle = Some(handle);
+                self.connected_port_name = Some(port.name.clone());
+                self.status = format!("Connected to {} @ {} baud", port.name, self.baud_rate);
+                self.pending_connect_auto_fetch = self.auto_fetch;
+                self.query_firmware_version();
+                Ok(())
+            }
+            DeferredAction::QueryFirmware => {
+                self.query_firmware_version();
+                Ok(())
+            }
+            DeferredAction::UploadDriverAndId => {
+                self.upload_selected_driver()?;
+                self.query_chip_id();
+                Ok(())
+            }
+            DeferredAction::FetchImage => {
+                let size = self
+                    .chip_size()
+                    .ok_or_else(|| "fetch image failed: kein erkannter Chip".to_string())?;
+                self.dump_range_to_ro(0, size)
+            }
+            DeferredAction::FetchRange { start, len } => self.dump_range_to_ro(start, len),
+            DeferredAction::FetchSector { start, size } => self.dump_range_to_ro(start, size),
+            DeferredAction::EraseImage => self.erase_chip(),
+            DeferredAction::EraseSector { start } => self.erase_sector(start),
+            DeferredAction::FlashImage => {
+                let size = self
+                    .chip_size()
+                    .ok_or_else(|| "flash image failed: kein erkannter Chip".to_string())?;
+                self.flash_range_from_work(0, size)
+            }
+            DeferredAction::FlashRange { start, len } => self.flash_range_from_work(start, len),
+            DeferredAction::FlashSector { start, size } => self.flash_range_from_work(start, size),
+        }
+    }
+
     fn serial_send_and_read_lines(
         &mut self,
         command: &str,
@@ -932,6 +1062,20 @@ impl FlashBangGuiApp {
                                     chip.name, chip.manufacturer_id, chip.device_id, chip.driver_id
                                 ));
                                 self.status = format!("Chip erkannt: {}", chip.name);
+
+                                if self.pending_connect_auto_fetch && self.auto_fetch {
+                                    self.pending_connect_auto_fetch = false;
+                                    self.reset_inspector_buffers();
+                                    self.log_action(
+                                        "Auto-Fetch: running Fetch Image after connect/driver validation"
+                                            .to_string(),
+                                    );
+                                    if let Err(e) = self.dump_range_to_ro(0, chip.size_bytes as usize)
+                                    {
+                                        self.status =
+                                            format!("Auto-Fetch nach Connect fehlgeschlagen: {e}");
+                                    }
+                                }
                             } else {
                                 self.data.chip = None;
                                 self.data.log.push(format!(
@@ -1325,10 +1469,21 @@ impl FlashBangGuiApp {
         Ok(handle)
     }
 
-    fn icon_button(ui: &mut egui::Ui, texture: &egui::TextureHandle, tooltip: &str) -> egui::Response {
-        let image = egui::Image::new((texture.id(), egui::vec2(120.0, 40.0)));
-        ui.add_sized([120.0, 40.0], egui::ImageButton::new(image).frame(false))
-            .on_hover_text(tooltip)
+    fn icon_button(ui: &mut egui::Ui, texture: &egui::TextureHandle, enabled: bool) -> egui::Response {
+        let mut image = egui::Image::new((texture.id(), egui::vec2(120.0, 40.0)));
+        if !enabled {
+            image = image.tint(egui::Color32::from_gray(110));
+        }
+
+        if enabled {
+            ui.add_sized([120.0, 40.0], egui::ImageButton::new(image).frame(false))
+        } else {
+            ui.add_sized([120.0, 40.0], image.sense(egui::Sense::hover()))
+        }
+    }
+
+    fn short_tooltip_label(tooltip: &str) -> &str {
+        tooltip.split(" (").next().unwrap_or(tooltip)
     }
 
     fn operation_button_enabled(
@@ -1338,12 +1493,28 @@ impl FlashBangGuiApp {
         key: &str,
         spec: ButtonVisualSpec,
         enabled: bool,
+        disabled_reason: Option<&str>,
         tooltip: &str,
     ) -> egui::Response {
         match self.texture_for_visual(ctx, key, spec) {
-            Ok(texture) => ui
-                .add_enabled_ui(enabled, |ui| Self::icon_button(ui, &texture, tooltip))
-                .inner,
+            Ok(texture) => {
+                let enabled = enabled && !self.is_busy;
+                let response = Self::icon_button(ui, &texture, enabled);
+                let short = Self::short_tooltip_label(tooltip);
+                if enabled {
+                    response.on_hover_text(short)
+                } else {
+                    let reason = if self.is_busy {
+                        self.busy_action
+                            .as_deref()
+                            .map(|a| format!("GUI beschaeftigt: {a}"))
+                            .unwrap_or_else(|| "GUI beschaeftigt".to_string())
+                    } else {
+                        disabled_reason.unwrap_or("Derzeit nicht verfuegbar").to_string()
+                    };
+                    response.on_hover_text(format!("{}\n\nNicht verfuegbar: {}", short, reason))
+                }
+            }
             Err(err) => {
                 self.status = err;
                 ui.add_enabled(false, egui::Button::new(tooltip))
@@ -1433,15 +1604,28 @@ impl FlashBangGuiApp {
             }
         }
 
-        self.mark_ro_unknown(start, len);
         let total = len;
+        if self.auto_fetch {
+            self.log_action(format!(
+                "Auto-Fetch: refreshing flashed range 0x{start:05X}+{len}"
+            ));
+            self.dump_range_to_ro(start, len)?;
+        } else {
+            self.mark_ro_unknown(start, len);
+        }
         self.log_action(format!(
             "Flash done: total={} programmed={} skipped_equal={} programmed_changed={} programmed_unknown={} verify_failures=0",
             total, flashed, skipped_equal, programmed_changed, programmed_unknown
         ));
-        self.status = format!(
-            "Flash done: total={total}, programmed={flashed}, skipped_equal={skipped_equal}, changed={programmed_changed}, unknown={programmed_unknown}, verify_failures=0. Inspector marked stale/gray in affected range."
-        );
+        if self.auto_fetch {
+            self.status = format!(
+                "Flash done: total={total}, programmed={flashed}, skipped_equal={skipped_equal}, changed={programmed_changed}, unknown={programmed_unknown}, verify_failures=0. Auto-Fetch refreshed flashed range."
+            );
+        } else {
+            self.status = format!(
+                "Flash done: total={total}, programmed={flashed}, skipped_equal={skipped_equal}, changed={programmed_changed}, unknown={programmed_unknown}, verify_failures=0. Inspector marked stale/gray in affected range."
+            );
+        }
         Ok(())
     }
 
@@ -1475,15 +1659,7 @@ impl FlashBangGuiApp {
 
     fn byte_color_for_work(&self, addr: usize) -> egui::Color32 {
         match self.color_mode {
-            ColorMode::Diff => {
-                if self.data.ro_known.get(addr).copied().unwrap_or(false)
-                    && self.data.ro_data[addr] == self.data.work_data[addr]
-                {
-                    egui::Color32::from_gray(220)
-                } else {
-                    egui::Color32::from_rgb(190, 230, 255)
-                }
-            }
+            ColorMode::Diff => Self::diff_color_for_state(self.byte_state(addr)),
             ColorMode::Palette => Self::palette_color(self.data.work_data[addr]),
         }
     }
@@ -1575,7 +1751,7 @@ impl FlashBangGuiApp {
                                     format!("S{:03}", sector_idx)
                                 };
                                 let sector_color = if is_active_sector {
-                                    egui::Color32::from_rgb(70, 10, 10)
+                                    egui::Color32::from_rgb(255, 40, 40)
                                 } else {
                                     egui::Color32::from_rgb(120, 120, 120)
                                 };
@@ -1619,6 +1795,9 @@ impl FlashBangGuiApp {
                                 let in_selected_range = selected_range
                                     .map(|(start, end)| addr >= start && addr <= end)
                                     .unwrap_or(false);
+                                let in_active_sector = active_sector_from_input
+                                    .map(|sector_idx| addr / sector_size == sector_idx)
+                                    .unwrap_or(false);
 
                                 let mut text = self.display_text_for_byte(byte);
                                 if self.character_mode == CharacterMode::Ascii && text.is_empty() {
@@ -1632,23 +1811,26 @@ impl FlashBangGuiApp {
                                 // Always use RRRGGGBB value mapping as base cell background.
                                 ui.painter().rect_filled(rect, 0.0, Self::palette_color(byte));
 
+                                // Outline priority: cursor > selected range > active sector.
+                                // Keep one consistent stroke width to avoid perceived thickness jitter.
+                                let outline_width = 1.4;
                                 if selected {
                                     ui.painter().rect_stroke(
                                         rect.shrink(0.5),
                                         0.0,
-                                        egui::Stroke::new(1.6, egui::Color32::from_rgb(255, 48, 48)),
-                                    );
-                                } else if response.hovered() {
-                                    ui.painter().rect_stroke(
-                                        rect.shrink(0.5),
-                                        0.0,
-                                        egui::Stroke::new(1.4, egui::Color32::from_rgb(96, 208, 255)),
+                                        egui::Stroke::new(outline_width, egui::Color32::from_rgb(40, 255, 80)),
                                     );
                                 } else if in_selected_range {
                                     ui.painter().rect_stroke(
                                         rect.shrink(0.5),
                                         0.0,
-                                        egui::Stroke::new(1.2, egui::Color32::from_rgb(255, 210, 64)),
+                                        egui::Stroke::new(outline_width, egui::Color32::from_rgb(96, 208, 255)),
+                                    );
+                                } else if in_active_sector {
+                                    ui.painter().rect_stroke(
+                                        rect.shrink(0.5),
+                                        0.0,
+                                        egui::Stroke::new(outline_width, egui::Color32::from_rgb(80, 20, 20)),
                                     );
                                 }
                                 Self::paint_outlined_cell_text(ui, rect, &text, color, selected);
@@ -1721,11 +1903,15 @@ impl eframe::App for FlashBangGuiApp {
                     status_line.push_str(" | ");
                     status_line.push_str(&chip_status);
                 }
-                ui.label(status_line);
+                if self.is_busy {
+                    ui.colored_label(egui::Color32::from_rgb(255, 170, 40), status_line);
+                } else {
+                    ui.label(status_line);
+                }
             });
 
             ui.horizontal(|ui| {
-                ui.add_enabled_ui(self.serial_handle.is_none(), |ui| {
+                ui.add_enabled_ui(self.serial_handle.is_none() && !self.is_busy, |ui| {
                     ui.label("Serial Port:");
                     let selected_name = self
                         .available_ports
@@ -1778,21 +1964,21 @@ impl eframe::App for FlashBangGuiApp {
                         self.selected_driver_index = 0;
                     }
                 }
-                if self.serial_handle.is_some() && ui.button("Upload Driver + ID").clicked() {
+                if self.serial_handle.is_some() && !self.is_busy && ui.button("Upload Driver + ID").clicked() {
                     self.log_action("Button: Upload Driver + ID");
                     do_upload_driver = true;
                 }
 
                 if self.serial_handle.is_some() {
-                    if ui.button("Firmware abfragen").clicked() {
+                    if !self.is_busy && ui.button("Firmware abfragen").clicked() {
                         self.log_action("Button: Firmware abfragen");
                         do_query_fw = true;
                     }
-                    if ui.button("Disconnect").clicked() {
+                    if !self.is_busy && ui.button("Disconnect").clicked() {
                         self.log_action("Button: Disconnect");
                         do_disconnect = true;
                     }
-                } else if ui.button("Connect").clicked() {
+                } else if !self.is_busy && ui.button("Connect").clicked() {
                     self.log_action("Button: Connect");
                     do_connect = true;
                 }
@@ -1811,48 +1997,20 @@ impl eframe::App for FlashBangGuiApp {
         if do_disconnect {
             self.serial_handle = None;
             self.connected_port_name = None;
+            self.pending_connect_auto_fetch = false;
             self.status = "Serial port disconnected".to_string();
         }
 
         if do_connect {
-            let selected_port = self.available_ports.get(self.selected_port_index).cloned();
-            if let Some(port) = selected_port {
-                match open_serial_port(&port.name, self.baud_rate, 300) {
-                    Ok(handle) => {
-                        if self.available_drivers.is_empty() {
-                            self.status = "Kein Treiber gefunden. Bitte 'Refresh Driver' pruefen.".to_string();
-                            return;
-                        }
-                        self.push_wire(
-                            WireDirection::Tx,
-                            format!("<open {} @ {}>", port.name, self.baud_rate),
-                        );
-                        self.serial_handle = Some(handle);
-                        self.connected_port_name = Some(port.name.clone());
-                        self.status = format!("Connected to {} @ {} baud", port.name, self.baud_rate);
-                        do_query_fw = true;
-                    }
-                    Err(e) => {
-                        self.serial_handle = None;
-                        self.connected_port_name = None;
-                        self.status = format!("Connect failed: {e}");
-                    }
-                }
-            } else {
-                self.status = "No serial port selected".to_string();
-            }
+            self.queue_action(ctx, "Connect", DeferredAction::Connect);
         }
 
         if do_query_fw {
-            self.query_firmware_version();
+            self.queue_action(ctx, "Firmware abfragen", DeferredAction::QueryFirmware);
         }
 
         if do_upload_driver {
-            if let Err(e) = self.upload_selected_driver() {
-                self.status = format!("Driver-Upload fehlgeschlagen: {e}");
-            } else {
-                self.query_chip_id();
-            }
+            self.queue_action(ctx, "Upload Driver + ID", DeferredAction::UploadDriverAndId);
         }
 
         self.handle_workspace_typing(ctx);
@@ -1966,6 +2124,26 @@ impl eframe::App for FlashBangGuiApp {
                 self.warning_dialog = None;
             }
         }
+
+        if self.pending_action.is_some() {
+            if self.pending_action_armed {
+                self.pending_action_armed = false;
+                ctx.request_repaint();
+            } else {
+                if let Some(label) = self.busy_action.clone() {
+                    self.log_action(format!("Action execute: {label}"));
+                }
+                if let Err(e) = self.execute_deferred_action() {
+                    self.log_action(format!("Action error: {e}"));
+                    if self.status.starts_with("Laufend:") {
+                        self.status = format!("Aktion fehlgeschlagen: {e}");
+                    }
+                }
+                self.is_busy = false;
+                self.busy_action = None;
+                ctx.request_repaint();
+            }
+        }
     }
 }
 
@@ -1988,6 +2166,7 @@ impl FlashBangGuiApp {
             ui.separator();
             ui.checkbox(&mut self.show_sector_boundaries, "Show Sector Boundaries");
             ui.checkbox(&mut self.allow_flash_gray, "Allow Flash on gray");
+            ui.checkbox(&mut self.auto_fetch, "Auto-Fetch");
         });
 
         ui.horizontal_wrapped(|ui| {
@@ -2070,6 +2249,136 @@ impl FlashBangGuiApp {
         let can_load_sector = valid_sector.is_some();
         let can_save_image = !self.data.work_data.is_empty();
         let can_save_sector = valid_sector.is_some();
+
+        let reason_join = |reasons: Vec<&str>| -> Option<String> {
+            if reasons.is_empty() {
+                None
+            } else {
+                Some(reasons.join(" | "))
+            }
+        };
+
+        let reason_fetch_image = if can_fetch_image {
+            None
+        } else {
+            let mut r = Vec::new();
+            if !connected {
+                r.push("Not Connected");
+            }
+            if chip_known_size.is_none() {
+                r.push("Kein erkannter Chip");
+            }
+            reason_join(r)
+        };
+
+        let reason_fetch_range = if can_fetch_range {
+            None
+        } else {
+            let mut r = Vec::new();
+            if !connected {
+                r.push("Not Connected");
+            }
+            if chip_known_size.is_none() {
+                r.push("Kein erkannter Chip");
+            }
+            if valid_range.is_none() {
+                r.push("Ungueltige Range-Eingabe");
+            }
+            reason_join(r)
+        };
+
+        let reason_fetch_sector = if can_fetch_sector {
+            None
+        } else {
+            let mut r = Vec::new();
+            if !connected {
+                r.push("Not Connected");
+            }
+            if !chip_known {
+                r.push("Kein erkannter Chip");
+            }
+            if valid_sector.is_none() {
+                r.push("Ungueltige Sektor-Eingabe");
+            }
+            reason_join(r)
+        };
+
+        let reason_erase_image = if can_erase_image {
+            None
+        } else {
+            let mut r = Vec::new();
+            if !connected {
+                r.push("Not Connected");
+            }
+            if chip_known_size.is_none() {
+                r.push("Kein erkannter Chip");
+            }
+            reason_join(r)
+        };
+
+        let reason_erase_sector = if can_erase_sector {
+            None
+        } else {
+            let mut r = Vec::new();
+            if !connected {
+                r.push("Not Connected");
+            }
+            if !chip_known {
+                r.push("Kein erkannter Chip");
+            }
+            if valid_sector.is_none() {
+                r.push("Ungueltige Sektor-Eingabe");
+            }
+            reason_join(r)
+        };
+
+        let reason_copy_image = if can_copy_image {
+            None
+        } else {
+            let mut r = Vec::new();
+            if chip_known_size.is_none() {
+                r.push("Kein erkannter Chip");
+            }
+            r.push("Inspector-Daten nicht vollstaendig (erst Fetch ausfuehren)");
+            reason_join(r)
+        };
+
+        let reason_copy_range = if can_copy_range {
+            None
+        } else {
+            let mut r = Vec::new();
+            if valid_range.is_none() {
+                r.push("Ungueltige Range-Eingabe");
+            }
+            r.push("Inspector-Range nicht gelesen (erst Fetch Range)");
+            reason_join(r)
+        };
+
+        let reason_copy_sector = if can_copy_sector {
+            None
+        } else {
+            let mut r = Vec::new();
+            if valid_sector.is_none() {
+                r.push("Ungueltige Sektor-Eingabe");
+            }
+            r.push("Inspector-Sektor nicht gelesen (erst Fetch Sector)");
+            reason_join(r)
+        };
+
+        let reason_flash_image = chip_known_size
+            .and_then(|size| self.flash_disable_reason(0, size))
+            .or_else(|| if can_flash_image { None } else { Some("Kein erkannter Chip".to_string()) });
+        let reason_flash_range = valid_range
+            .and_then(|(start, len)| self.flash_disable_reason(start, len))
+            .or_else(|| if can_flash_range { None } else { Some("Ungueltige Range-Eingabe".to_string()) });
+        let reason_flash_sector = valid_sector
+            .and_then(|(_, start, size)| self.flash_disable_reason(start, size))
+            .or_else(|| if can_flash_sector { None } else { Some("Ungueltige Sektor-Eingabe".to_string()) });
+
+        let reason_load_image = if can_load_image { None } else { Some("Workspace nicht verfuegbar".to_string()) };
+        let reason_load_sector = if can_load_sector { None } else { Some("Ungueltige Sektor-Eingabe".to_string()) };
+        let reason_save_image = if can_save_image { None } else { Some("Workspace nicht verfuegbar".to_string()) };
+        let reason_save_sector = if can_save_sector { None } else { Some("Ungueltige Sektor-Eingabe".to_string()) };
         let spacing_x = ui.spacing().item_spacing.x;
         const TRANSFER_BUTTON_WIDTH: f32 = 120.0;
         const TRANSFER_COL_PADDING_X: f32 = 12.0;
@@ -2117,17 +2426,11 @@ impl FlashBangGuiApp {
                                             right_base: BaseIcon::Inspector,
                                         },
                                         can_fetch_image,
+                                        reason_fetch_image.as_deref(),
                                         "Fetch Image (Chip -> Inspector)",
                                     ).clicked() {
-                                            self.log_action("Button: Fetch Image");
-                                        if let Some(size) = self.chip_size() {
-                                            if let Err(e) = self.dump_range_to_ro(0, size) {
-                                                self.status = format!("Fetch image failed: {e}");
-                                            }
-                                        } else {
-                                            self.status =
-                                                "Fetch image failed: kein erkannter Chip".to_string();
-                                        }
+                                        self.log_action("Button: Fetch Image");
+                                        self.queue_action(&ctx, "Fetch Image", DeferredAction::FetchImage);
                                     }
                                     if self.operation_button_enabled(
                                         ui,
@@ -2141,17 +2444,20 @@ impl FlashBangGuiApp {
                                             right_base: BaseIcon::Inspector,
                                         },
                                         can_fetch_range,
+                                        reason_fetch_range.as_deref(),
                                         "Fetch Range (Chip+R -> Inspector+R)",
                                     ).clicked() {
-                                            self.log_action(format!(
-                                                "Button: Fetch Range (start={} len={})",
-                                                self.range_start_input, self.range_len_input
-                                            ));
+                                        self.log_action(format!(
+                                            "Button: Fetch Range (start={} len={})",
+                                            self.range_start_input, self.range_len_input
+                                        ));
                                         match self.parse_range_input() {
                                             Ok((start, len)) => {
-                                                if let Err(e) = self.dump_range_to_ro(start, len) {
-                                                    self.status = format!("Fetch range failed: {e}");
-                                                }
+                                                self.queue_action(
+                                                    &ctx,
+                                                    "Fetch Range",
+                                                    DeferredAction::FetchRange { start, len },
+                                                );
                                             }
                                             Err(e) => self.status = format!("Invalid range: {e}"),
                                         }
@@ -2168,14 +2474,17 @@ impl FlashBangGuiApp {
                                             right_base: BaseIcon::Inspector,
                                         },
                                         can_fetch_sector,
+                                        reason_fetch_sector.as_deref(),
                                         "Fetch Sector (Chip+S -> Inspector+S)",
                                     ).clicked() {
-                                            self.log_action(format!("Button: Fetch Sector (sector={})", self.sector_input));
+                                        self.log_action(format!("Button: Fetch Sector (sector={})", self.sector_input));
                                         match self.parse_sector_input() {
                                             Ok((_idx, start, size)) => {
-                                                if let Err(e) = self.dump_range_to_ro(start, size) {
-                                                    self.status = format!("Fetch sector failed: {e}");
-                                                }
+                                                self.queue_action(
+                                                    &ctx,
+                                                    "Fetch Sector",
+                                                    DeferredAction::FetchSector { start, size },
+                                                );
                                             }
                                             Err(e) => self.status = format!("Invalid sector: {e}"),
                                         }
@@ -2192,12 +2501,11 @@ impl FlashBangGuiApp {
                                             right_base: BaseIcon::Trash,
                                         },
                                         can_erase_image,
+                                        reason_erase_image.as_deref(),
                                         "Erase Image (Chip -> Trash)",
                                     ).clicked() {
-                                            self.log_action("Button: Erase Image");
-                                        if let Err(e) = self.erase_chip() {
-                                            self.status = format!("Erase all failed: {e}");
-                                        }
+                                        self.log_action("Button: Erase Image");
+                                        self.queue_action(&ctx, "Erase Image", DeferredAction::EraseImage);
                                     }
                                     if self.operation_button_enabled(
                                         ui,
@@ -2211,14 +2519,17 @@ impl FlashBangGuiApp {
                                             right_base: BaseIcon::Trash,
                                         },
                                         can_erase_sector,
+                                        reason_erase_sector.as_deref(),
                                         "Erase Sector (Chip+S -> Trash)",
                                     ).clicked() {
-                                            self.log_action(format!("Button: Erase Sector (sector={})", self.sector_input));
+                                        self.log_action(format!("Button: Erase Sector (sector={})", self.sector_input));
                                         match self.parse_sector_input() {
                                             Ok((_idx, start, _size)) => {
-                                                if let Err(e) = self.erase_sector(start) {
-                                                    self.status = format!("Erase sector failed: {e}");
-                                                }
+                                                self.queue_action(
+                                                    &ctx,
+                                                    "Erase Sector",
+                                                    DeferredAction::EraseSector { start },
+                                                );
                                             }
                                             Err(e) => self.status = format!("Invalid sector: {e}"),
                                         }
@@ -2250,6 +2561,7 @@ impl FlashBangGuiApp {
                                         right_base: BaseIcon::Workbench,
                                     },
                                     can_copy_image,
+                                    reason_copy_image.as_deref(),
                                     "Copy Image (Inspector -> Workbench)",
                                 ).clicked() {
                                     self.log_action("Button: Copy Image");
@@ -2271,6 +2583,7 @@ impl FlashBangGuiApp {
                                         right_base: BaseIcon::Workbench,
                                     },
                                     can_copy_sector,
+                                    reason_copy_sector.as_deref(),
                                     "Copy Sector (Inspector+S -> Workbench+S)",
                                 ).clicked() {
                                     self.log_action(format!("Button: Copy Sector (sector={})", self.sector_input));
@@ -2295,6 +2608,7 @@ impl FlashBangGuiApp {
                                         right_base: BaseIcon::Workbench,
                                     },
                                     can_copy_range,
+                                    reason_copy_range.as_deref(),
                                     "Copy Range (Inspector+R -> Workbench+R)",
                                 ).clicked() {
                                     self.log_action(format!(
@@ -2325,13 +2639,12 @@ impl FlashBangGuiApp {
                                         right_base: BaseIcon::Workbench,
                                     },
                                     can_flash_image,
+                                    reason_flash_image.as_deref(),
                                     "Flash Image (Chip <- Workbench)",
                                 ).clicked() {
                                     self.log_action("Button: Flash Image");
-                                    if let Some(size) = self.chip_size() {
-                                        if let Err(e) = self.flash_range_from_work(0, size) {
-                                            self.status = format!("Flash all failed: {e}");
-                                        }
+                                    if self.chip_size().is_some() {
+                                        self.queue_action(&ctx, "Flash Image", DeferredAction::FlashImage);
                                     }
                                 }
                                 if self.operation_button_enabled(
@@ -2346,14 +2659,17 @@ impl FlashBangGuiApp {
                                         right_base: BaseIcon::Workbench,
                                     },
                                     can_flash_sector,
+                                    reason_flash_sector.as_deref(),
                                     "Flash Sector (Chip+S <- Workbench+S)",
                                 ).clicked() {
                                     self.log_action(format!("Button: Flash Sector (sector={})", self.sector_input));
                                     match self.parse_sector_input() {
                                         Ok((_idx, start, size)) => {
-                                            if let Err(e) = self.flash_range_from_work(start, size) {
-                                                self.status = format!("Flash sector failed: {e}");
-                                            }
+                                            self.queue_action(
+                                                &ctx,
+                                                "Flash Sector",
+                                                DeferredAction::FlashSector { start, size },
+                                            );
                                         }
                                         Err(e) => self.status = format!("Invalid sector: {e}"),
                                     }
@@ -2370,6 +2686,7 @@ impl FlashBangGuiApp {
                                         right_base: BaseIcon::Workbench,
                                     },
                                     can_flash_range,
+                                    reason_flash_range.as_deref(),
                                     "Flash Range (Chip+R <- Workbench+R)",
                                 ).clicked() {
                                     self.log_action(format!(
@@ -2378,9 +2695,11 @@ impl FlashBangGuiApp {
                                     ));
                                     match self.parse_range_input() {
                                         Ok((start, len)) => {
-                                            if let Err(e) = self.flash_range_from_work(start, len) {
-                                                self.status = format!("Flash range failed: {e}");
-                                            }
+                                            self.queue_action(
+                                                &ctx,
+                                                "Flash Range",
+                                                DeferredAction::FlashRange { start, len },
+                                            );
                                         }
                                         Err(e) => self.status = format!("Invalid range: {e}"),
                                     }
@@ -2422,6 +2741,7 @@ impl FlashBangGuiApp {
                                             right_base: BaseIcon::Workbench,
                                         },
                                         can_load_image,
+                                        reason_load_image.as_deref(),
                                         "Load Image (Disk -> Workbench)",
                                     ).clicked() {
                                             self.log_action("Button: Load Image");
@@ -2445,6 +2765,7 @@ impl FlashBangGuiApp {
                                             right_base: BaseIcon::Workbench,
                                         },
                                         can_load_sector,
+                                        reason_load_sector.as_deref(),
                                         "Load Sector (Disk+S -> Workbench+S)",
                                     ).clicked() {
                                             self.log_action(format!("Button: Load Sector (sector={})", self.sector_input));
@@ -2473,6 +2794,7 @@ impl FlashBangGuiApp {
                                             right_base: BaseIcon::Disk,
                                         },
                                         can_save_image,
+                                        reason_save_image.as_deref(),
                                         "Save Image (Workbench -> Disk)",
                                     ).clicked() {
                                             self.log_action("Button: Save Image");
@@ -2501,6 +2823,7 @@ impl FlashBangGuiApp {
                                             right_base: BaseIcon::Disk,
                                         },
                                         can_save_sector,
+                                        reason_save_sector.as_deref(),
                                         "Save Sector (Workbench+S -> Disk+S)",
                                     ).clicked() {
                                             self.log_action(format!("Button: Save Sector (sector={})", self.sector_input));
