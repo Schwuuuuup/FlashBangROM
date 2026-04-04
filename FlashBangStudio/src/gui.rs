@@ -5,9 +5,14 @@ use std::process::{Command, Stdio};
 use std::collections::HashMap;
 use std::time::Duration;
 
+use chrono::Local;
 use eframe::egui;
+use flate2::read::GzDecoder;
+use flate2::write::GzEncoder;
+use flate2::Compression;
 use serialport::SerialPort;
-use tinyfiledialogs::{input_box, open_file_dialog, save_file_dialog};
+use tar::Builder;
+use tinyfiledialogs::{input_box, message_box_yes_no, open_file_dialog, save_file_dialog_with_filter, MessageBoxIcon, YesNo};
 
 use crate::{
     driver_catalog,
@@ -22,7 +27,9 @@ use crate::{
 
 pub fn run_gui() -> Result<(), eframe::Error> {
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([1024.0, 700.0]),
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([1024.0, 700.0])
+            .with_maximized(true),
         ..Default::default()
     };
 
@@ -113,6 +120,104 @@ enum WireDirection {
     Ui,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SaveFormat {
+    Bin,
+    Hex,
+    Sector,
+    BinGz,
+    HexGz,
+    SectorGz,
+    SectorsTgz,
+    Gif,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ImageSaveFormat {
+    Bin,
+    Hex,
+    BinGz,
+    HexGz,
+    SectorsTgz,
+}
+
+impl ImageSaveFormat {
+    const ALL: [ImageSaveFormat; 5] = [
+        ImageSaveFormat::Bin,
+        ImageSaveFormat::Hex,
+        ImageSaveFormat::BinGz,
+        ImageSaveFormat::HexGz,
+        ImageSaveFormat::SectorsTgz,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            ImageSaveFormat::Bin => ".bin",
+            ImageSaveFormat::Hex => ".hex",
+            ImageSaveFormat::BinGz => ".bin.gz",
+            ImageSaveFormat::HexGz => ".hex.gz",
+            ImageSaveFormat::SectorsTgz => ".sectors.tgz",
+        }
+    }
+
+    fn filter_pattern(self) -> &'static str {
+        match self {
+            ImageSaveFormat::Bin => "*.bin",
+            ImageSaveFormat::Hex => "*.hex",
+            ImageSaveFormat::BinGz => "*.bin.gz",
+            ImageSaveFormat::HexGz => "*.hex.gz",
+            ImageSaveFormat::SectorsTgz => "*.sectors.tgz",
+        }
+    }
+
+    fn as_save_format(self) -> SaveFormat {
+        match self {
+            ImageSaveFormat::Bin => SaveFormat::Bin,
+            ImageSaveFormat::Hex => SaveFormat::Hex,
+            ImageSaveFormat::BinGz => SaveFormat::BinGz,
+            ImageSaveFormat::HexGz => SaveFormat::HexGz,
+            ImageSaveFormat::SectorsTgz => SaveFormat::SectorsTgz,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SectorSaveFormat {
+    Sector,
+    SectorGz,
+}
+
+impl SectorSaveFormat {
+    const ALL: [SectorSaveFormat; 2] = [SectorSaveFormat::Sector, SectorSaveFormat::SectorGz];
+
+    fn label(self) -> &'static str {
+        match self {
+            SectorSaveFormat::Sector => ".sector",
+            SectorSaveFormat::SectorGz => ".sector.gz",
+        }
+    }
+
+    fn filter_pattern(self) -> &'static str {
+        match self {
+            SectorSaveFormat::Sector => "*.sector",
+            SectorSaveFormat::SectorGz => "*.sector.gz",
+        }
+    }
+
+    fn as_save_format(self) -> SaveFormat {
+        match self {
+            SectorSaveFormat::Sector => SaveFormat::Sector,
+            SectorSaveFormat::SectorGz => SaveFormat::SectorGz,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum SaveScope {
+    Image,
+    Sector,
+}
+
 struct WireLogEntry {
     direction: WireDirection,
     text: String,
@@ -145,6 +250,12 @@ struct WarningDialogState {
     action: Option<WarningAction>,
 }
 
+#[derive(Clone, Copy)]
+enum SaveFormatDialogState {
+    Image,
+    Sector { start: usize, size: usize },
+}
+
 pub struct FlashBangGuiApp {
     data: AppData,
     available_ports: Vec<SerialPortEntry>,
@@ -160,6 +271,7 @@ pub struct FlashBangGuiApp {
     uploaded_driver_id: Option<String>,
     show_about: bool,
     warning_dialog: Option<WarningDialogState>,
+    save_format_dialog: Option<SaveFormatDialogState>,
     is_busy: bool,
     busy_action: Option<String>,
     pending_action: Option<DeferredAction>,
@@ -167,7 +279,8 @@ pub struct FlashBangGuiApp {
     status: String,
     diff_foreground_enabled: bool,
     palette_background_enabled: bool,
-    character_mode: CharacterMode,
+    inspector_input_mode: CharacterMode,
+    workspace_input_mode: CharacterMode,
     show_sector_boundaries: bool,
     allow_flash_gray: bool,
     auto_fetch: bool,
@@ -176,8 +289,11 @@ pub struct FlashBangGuiApp {
     range_len_input: String,
     sector_input: String,
     file_path_input: String,
+    image_save_format: ImageSaveFormat,
+    sector_save_format: SectorSaveFormat,
     clipboard: Vec<u8>,
     clipboard_desc: String,
+    workbench_dirty: bool,
     selected_ro_addr: Option<usize>,
     selected_work_addr: Option<usize>,
     active_pane: Pane,
@@ -234,6 +350,7 @@ impl FlashBangGuiApp {
             uploaded_driver_id: None,
             show_about: false,
             warning_dialog: None,
+            save_format_dialog: None,
             is_busy: false,
             busy_action: None,
             pending_action: None,
@@ -241,7 +358,8 @@ impl FlashBangGuiApp {
             status: "Nicht verbunden. Verbinde ein Geraet fuer Live-Daten (Preview aktiv).".to_string(),
             diff_foreground_enabled: true,
             palette_background_enabled: true,
-            character_mode: CharacterMode::Hex,
+            inspector_input_mode: CharacterMode::Hex,
+            workspace_input_mode: CharacterMode::Hex,
             show_sector_boundaries: true,
             allow_flash_gray: false,
             auto_fetch: true,
@@ -250,8 +368,11 @@ impl FlashBangGuiApp {
             range_len_input: "".to_string(),
             sector_input: "0".to_string(),
             file_path_input: "captures/rom_inspector.bin".to_string(),
+            image_save_format: ImageSaveFormat::Bin,
+            sector_save_format: SectorSaveFormat::Sector,
             clipboard: Vec::new(),
             clipboard_desc: "empty".to_string(),
+            workbench_dirty: false,
             selected_ro_addr: None,
             selected_work_addr: None,
             active_pane: Pane::Workspace,
@@ -280,6 +401,25 @@ impl FlashBangGuiApp {
         });
 
         self.scroll_style_initialized = true;
+    }
+
+    fn pane_input_mode(&self, pane: Pane) -> CharacterMode {
+        match pane {
+            Pane::Inspector => self.inspector_input_mode,
+            Pane::Workspace => self.workspace_input_mode,
+        }
+    }
+
+    fn set_pane_input_mode(&mut self, pane: Pane, mode: CharacterMode) {
+        match pane {
+            Pane::Inspector => self.inspector_input_mode = mode,
+            Pane::Workspace => {
+                self.workspace_input_mode = mode;
+                if mode == CharacterMode::Ascii {
+                    self.pending_hex_high_nibble = None;
+                }
+            }
+        }
     }
 
     fn draw_serial_monitor(&mut self, ui: &mut egui::Ui) {
@@ -461,12 +601,36 @@ impl FlashBangGuiApp {
 
     fn init_workbench(&mut self, size: usize) {
         self.data.work_data = vec![0xFF; size];
+        self.workbench_dirty = false;
         self.selected_work_addr = None;
         self.pending_hex_high_nibble = None;
         self.rebuild_diff_report();
     }
 
+    fn confirm_discard_unsaved_workbench(&mut self) -> bool {
+        if !self.workbench_dirty {
+            return true;
+        }
+
+        match message_box_yes_no(
+            "Workbench ersetzen",
+            "Die Workbench enthaelt ungespeicherte Aenderungen. Wirklich verwerfen?",
+            MessageBoxIcon::Warning,
+            YesNo::No,
+        ) {
+            YesNo::Yes => true,
+            YesNo::No => {
+                self.status = "New Workbench abgebrochen (ungespeicherte Aenderungen beibehalten)".to_string();
+                false
+            }
+        }
+    }
+
     fn prompt_new_workbench(&mut self) {
+        if !self.confirm_discard_unsaved_workbench() {
+            return;
+        }
+
         let default_size = self
             .data
             .chip
@@ -801,13 +965,6 @@ impl FlashBangGuiApp {
         }
     }
 
-    fn display_text_for_byte(&self, byte: u8) -> String {
-        match self.character_mode {
-            CharacterMode::Hex => format!("{byte:02X}"),
-            CharacterMode::Ascii => Self::display_char_for_byte(byte).to_string(),
-        }
-    }
-
     fn clipboard_hex(bytes: &[u8]) -> String {
         bytes
             .iter()
@@ -859,7 +1016,11 @@ impl FlashBangGuiApp {
 
     fn set_work_byte(&mut self, addr: usize, value: u8) {
         if addr < self.data.work_data.len() {
+            if self.data.work_data[addr] == value {
+                return;
+            }
             self.data.work_data[addr] = value;
+            self.workbench_dirty = true;
             self.rebuild_diff_report();
         }
     }
@@ -873,6 +1034,7 @@ impl FlashBangGuiApp {
         }
         let end = start + bytes.len();
         self.data.work_data[start..end].copy_from_slice(bytes);
+        self.workbench_dirty = true;
         self.rebuild_diff_report();
         self.status = format!("Pasted {} byte(s) into workspace at 0x{start:05X}", bytes.len());
         Ok(())
@@ -893,17 +1055,377 @@ impl FlashBangGuiApp {
         false
     }
 
-    fn choose_save_file(&mut self, suggested_name: &str) -> bool {
+    fn choose_save_file_with_filter(
+        &mut self,
+        title: &str,
+        suggested_path: &str,
+        filters: &[&str],
+        description: &str,
+    ) -> Option<PathBuf> {
         let default_path = if self.file_path_input.trim().is_empty() {
-            suggested_name.to_string()
+            suggested_path.to_string()
         } else {
-            self.file_path_input.clone()
+            let previous = Path::new(self.file_path_input.trim());
+            let suggested_name = Path::new(suggested_path)
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or(suggested_path);
+            if let Some(parent) = previous.parent() {
+                parent.join(suggested_name).display().to_string()
+            } else {
+                suggested_path.to_string()
+            }
         };
-        if let Some(path) = save_file_dialog("Save ROM image", &default_path) {
-            self.file_path_input = path;
-            return true;
+
+        save_file_dialog_with_filter(title, &default_path, filters, description).map(|path| {
+            self.file_path_input = path.clone();
+            PathBuf::from(path)
+        })
+    }
+
+    fn extension_for_format(fmt: SaveFormat) -> &'static str {
+        match fmt {
+            SaveFormat::Bin => "bin",
+            SaveFormat::Hex => "hex",
+            SaveFormat::Sector => "sector",
+            SaveFormat::BinGz => "bin.gz",
+            SaveFormat::HexGz => "hex.gz",
+            SaveFormat::SectorGz => "sector.gz",
+            SaveFormat::SectorsTgz => "sectors.tgz",
+            SaveFormat::Gif => "gif",
         }
-        false
+    }
+
+    fn format_allowed_for_scope(fmt: SaveFormat, scope: SaveScope) -> bool {
+        match scope {
+            SaveScope::Image => matches!(
+                fmt,
+                SaveFormat::Bin
+                    | SaveFormat::Hex
+                    | SaveFormat::BinGz
+                    | SaveFormat::HexGz
+                    | SaveFormat::SectorsTgz
+            ),
+            SaveScope::Sector => matches!(fmt, SaveFormat::Sector | SaveFormat::SectorGz),
+        }
+    }
+
+    fn normalize_save_path(
+        path: &Path,
+        scope: SaveScope,
+        default_fmt: SaveFormat,
+    ) -> Result<(PathBuf, SaveFormat), String> {
+        let file_name = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .ok_or_else(|| "ungueltiger Dateiname".to_string())?;
+
+        if file_name.contains('.') {
+            let fmt = Self::save_format_from_path(path)?;
+            if !Self::format_allowed_for_scope(fmt, scope) {
+                return Err("Dateiendung passt nicht zum gewaehlten Save-Typ".to_string());
+            }
+            return Ok((path.to_path_buf(), fmt));
+        }
+
+        let ext = Self::extension_for_format(default_fmt);
+        let appended = PathBuf::from(format!("{}.{}", path.display(), ext));
+        Ok((appended, default_fmt))
+    }
+
+    fn save_image_with_format(&mut self, selected: ImageSaveFormat) {
+        let suggested = self.default_image_save_path(selected.label().trim_start_matches('.'));
+        let filters = [selected.filter_pattern()];
+        if let Some(path) = self.choose_save_file_with_filter(
+            "Save Image",
+            &suggested,
+            &filters,
+            "Image formats",
+        ) {
+            match Self::normalize_save_path(&path, SaveScope::Image, selected.as_save_format()) {
+                Ok((normalized_path, fmt)) => {
+                    self.file_path_input = normalized_path.display().to_string();
+                    if matches!(fmt, SaveFormat::SectorsTgz) {
+                        if let Err(e) = self.save_work_as_sectors_tgz(&normalized_path) {
+                            self.status = e;
+                        }
+                    } else {
+                        let size = self.data.work_data.len();
+                        if let Err(e) = self.save_work_range_to_file(0, size, &normalized_path) {
+                            self.status = e;
+                        }
+                    }
+                }
+                Err(e) => {
+                    self.status = e;
+                }
+            }
+        } else {
+            self.status = "Save cancelled".to_string();
+        }
+    }
+
+    fn save_sector_with_format(&mut self, start: usize, size: usize, selected: SectorSaveFormat) {
+        let suggested_path =
+            self.default_sector_save_path(start, size, selected.label().trim_start_matches('.'));
+        let filters = [selected.filter_pattern()];
+        if let Some(sector_path) = self.choose_save_file_with_filter(
+            "Save Sector",
+            &suggested_path,
+            &filters,
+            "Sector formats",
+        ) {
+            match Self::normalize_save_path(&sector_path, SaveScope::Sector, selected.as_save_format()) {
+                Ok((normalized_path, _fmt)) => {
+                    self.file_path_input = normalized_path.display().to_string();
+                    if let Err(e) = self.save_work_range_to_file(start, size, &normalized_path) {
+                        self.status = e;
+                    }
+                }
+                Err(e) => {
+                    self.status = e;
+                }
+            }
+        } else {
+            self.status = "Save cancelled".to_string();
+        }
+    }
+
+    fn sanitize_file_token(text: &str) -> String {
+        let mut out = String::with_capacity(text.len());
+        for ch in text.chars() {
+            if ch.is_ascii_alphanumeric() {
+                out.push(ch.to_ascii_lowercase());
+            } else if matches!(ch, '_' | '-') {
+                out.push(ch);
+            } else {
+                out.push('_');
+            }
+        }
+        let trimmed = out.trim_matches('_');
+        if trimmed.is_empty() {
+            "unknown_chip".to_string()
+        } else {
+            trimmed.to_string()
+        }
+    }
+
+    fn default_save_stem(&self) -> String {
+        let chip_name = self
+            .data
+            .chip
+            .as_ref()
+            .map(|chip| chip.name.as_str())
+            .unwrap_or("unknown_chip");
+        let chip = Self::sanitize_file_token(chip_name);
+        let ts = Local::now().format("%y%m%d-%H%M").to_string();
+        format!("{chip}_{ts}")
+    }
+
+    fn default_image_save_path(&self, fmt: &str) -> String {
+        format!("captures/{}.{}", self.default_save_stem(), fmt)
+    }
+
+    fn default_sector_save_path(&self, start: usize, len: usize, fmt: &str) -> String {
+        let _ = len;
+        format!("captures/{}_@{start:05X}.{}", self.default_save_stem(), fmt)
+    }
+
+    fn infer_start_from_filename(path: &Path) -> Option<usize> {
+        let name = path.file_name()?.to_str()?;
+
+        if let Some(at) = name.rfind('@') {
+            let hex: String = name[at + 1..]
+                .chars()
+                .take_while(|c| c.is_ascii_hexdigit())
+                .collect();
+            if !hex.is_empty() {
+                if let Ok(v) = usize::from_str_radix(&hex, 16) {
+                    return Some(v);
+                }
+            }
+        }
+
+        if let (Some(lb), Some(rb)) = (name.find('['), name.find(']')) {
+            if rb > lb + 1 {
+                let inner = &name[lb + 1..rb];
+                let first = inner
+                    .split(|c| c == '-' || c == ',')
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .trim_start_matches("0x")
+                    .trim_start_matches("0X");
+                if !first.is_empty() {
+                    if let Ok(v) = usize::from_str_radix(first, 16) {
+                        return Some(v);
+                    }
+                    if let Ok(v) = first.parse::<usize>() {
+                        return Some(v);
+                    }
+                }
+            }
+        }
+
+        let lower = name.to_ascii_lowercase();
+        if let Some(idx) = lower.find("from-0x") {
+            let src = &name[idx + 7..];
+            let hex: String = src.chars().take_while(|c| c.is_ascii_hexdigit()).collect();
+            if !hex.is_empty() {
+                if let Ok(v) = usize::from_str_radix(&hex, 16) {
+                    return Some(v);
+                }
+            }
+        }
+
+        None
+    }
+
+    fn save_format_from_path(path: &Path) -> Result<SaveFormat, String> {
+        let name = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .ok_or_else(|| "ungueltiger Dateiname".to_string())?
+            .to_ascii_lowercase();
+        if name.ends_with(".bin.gz") {
+            return Ok(SaveFormat::BinGz);
+        }
+        if name.ends_with(".hex.gz") {
+            return Ok(SaveFormat::HexGz);
+        }
+        if name.ends_with(".sector.gz") {
+            return Ok(SaveFormat::SectorGz);
+        }
+        if name.ends_with(".sectors.tgz") {
+            return Ok(SaveFormat::SectorsTgz);
+        }
+        if name.ends_with(".gif") {
+            return Ok(SaveFormat::Gif);
+        }
+        if name.ends_with(".bin") {
+            return Ok(SaveFormat::Bin);
+        }
+        if name.ends_with(".hex") {
+            return Ok(SaveFormat::Hex);
+        }
+        if name.ends_with(".sector") {
+            return Ok(SaveFormat::Sector);
+        }
+        Err(
+            "Unbekanntes Dateiformat. Erlaubt: .bin, .hex, .sector, .bin.gz, .hex.gz, .sector.gz, .sectors.tgz, .gif"
+                .to_string(),
+        )
+    }
+
+    fn save_work_as_sectors_tgz(&mut self, path: &Path) -> Result<(), String> {
+        let total_size = self.data.work_data.len();
+        if total_size == 0 {
+            return Err("Workbench ist leer".to_string());
+        }
+
+        let sector_size = self
+            .sector_size()
+            .ok_or_else(|| "Sektor-Groesse unbekannt".to_string())?;
+        if sector_size == 0 {
+            return Err("Sektor-Groesse ungueltig".to_string());
+        }
+
+        #[derive(serde::Serialize)]
+        struct SectorEntry {
+            path: String,
+            start: usize,
+            end: usize,
+            len: usize,
+        }
+
+        #[derive(serde::Serialize)]
+        struct Manifest {
+            format: String,
+            created_at: String,
+            chip: String,
+            total_size: usize,
+            sector_size: usize,
+            sectors: Vec<SectorEntry>,
+        }
+
+        let chip_name = self
+            .data
+            .chip
+            .as_ref()
+            .map(|c| c.name.clone())
+            .unwrap_or_else(|| "unknown_chip".to_string());
+
+        let file = fs::File::create(path).map_err(|e| format!("save failed: {e}"))?;
+        let gz = GzEncoder::new(file, Compression::default());
+        let mut tar = Builder::new(gz);
+
+        let mut sectors = Vec::new();
+        for start in (0..total_size).step_by(sector_size) {
+            let len = (total_size - start).min(sector_size);
+            let end = start + len - 1;
+            let entry_path = format!("sectors/from-0x{start:05X}_to-0x{end:05X}.sector");
+
+            let mut header = tar::Header::new_gnu();
+            header.set_mode(0o644);
+            header.set_size(len as u64);
+            header.set_cksum();
+            tar.append_data(
+                &mut header,
+                entry_path.as_str(),
+                &self.data.work_data[start..start + len],
+            )
+            .map_err(|e| format!("save failed: {e}"))?;
+
+            sectors.push(SectorEntry {
+                path: entry_path,
+                start,
+                end,
+                len,
+            });
+        }
+
+        let manifest = Manifest {
+            format: "flashbang.sectors.v1".to_string(),
+            created_at: Local::now().to_rfc3339(),
+            chip: chip_name,
+            total_size,
+            sector_size,
+            sectors,
+        };
+        let manifest_bytes = serde_json::to_vec_pretty(&manifest)
+            .map_err(|e| format!("save failed: {e}"))?;
+        let mut manifest_header = tar::Header::new_gnu();
+        manifest_header.set_mode(0o644);
+        manifest_header.set_size(manifest_bytes.len() as u64);
+        manifest_header.set_cksum();
+        tar.append_data(&mut manifest_header, "manifest.json", manifest_bytes.as_slice())
+            .map_err(|e| format!("save failed: {e}"))?;
+
+        let gz = tar.into_inner().map_err(|e| format!("save failed: {e}"))?;
+        gz.finish().map_err(|e| format!("save failed: {e}"))?;
+        self.workbench_dirty = false;
+        self.status = format!(
+            "Saved sectors bundle ({} sector file(s)) to {}",
+            total_size.div_ceil(sector_size),
+            path.display()
+        );
+        Ok(())
+    }
+
+    fn encode_hex_text(bytes: &[u8]) -> Vec<u8> {
+        let mut text = String::new();
+        for (i, b) in bytes.iter().enumerate() {
+            if i > 0 {
+                if i % 16 == 0 {
+                    text.push('\n');
+                } else {
+                    text.push(' ');
+                }
+            }
+            text.push_str(&format!("{b:02X}"));
+        }
+        text.push('\n');
+        text.into_bytes()
     }
 
     fn handle_workspace_typing(&mut self, ctx: &egui::Context) {
@@ -938,7 +1460,7 @@ impl FlashBangGuiApp {
                         continue;
                     }
                     for ch in text.chars() {
-                        match self.character_mode {
+                        match self.workspace_input_mode {
                             CharacterMode::Hex => {
                                 let Some(nibble) = ch.to_digit(16).map(|v| v as u8) else {
                                     continue;
@@ -1463,28 +1985,162 @@ impl FlashBangGuiApp {
         if start + len > self.data.work_data.len() {
             return Err("save range exceeds Workbench area".to_string());
         }
-        fs::write(path, &self.data.work_data[start..start + len]).map_err(|e| format!("save failed: {e}"))?;
+        let slice = &self.data.work_data[start..start + len];
+        let format = Self::save_format_from_path(path)?;
+
+        match format {
+            SaveFormat::Bin | SaveFormat::Sector => {
+                fs::write(path, slice).map_err(|e| format!("save failed: {e}"))?;
+            }
+            SaveFormat::Hex => {
+                let payload = Self::encode_hex_text(slice);
+                fs::write(path, payload).map_err(|e| format!("save failed: {e}"))?;
+            }
+            SaveFormat::BinGz | SaveFormat::SectorGz => {
+                let file = fs::File::create(path).map_err(|e| format!("save failed: {e}"))?;
+                let mut encoder = GzEncoder::new(file, Compression::default());
+                encoder
+                    .write_all(slice)
+                    .map_err(|e| format!("save failed: {e}"))?;
+                encoder.finish().map_err(|e| format!("save failed: {e}"))?;
+            }
+            SaveFormat::HexGz => {
+                let payload = Self::encode_hex_text(slice);
+                let file = fs::File::create(path).map_err(|e| format!("save failed: {e}"))?;
+                let mut encoder = GzEncoder::new(file, Compression::default());
+                encoder
+                    .write_all(&payload)
+                    .map_err(|e| format!("save failed: {e}"))?;
+                encoder.finish().map_err(|e| format!("save failed: {e}"))?;
+            }
+            SaveFormat::SectorsTgz => {
+                return Err(".sectors.tgz ist nur fuer Save Image verfuegbar".to_string());
+            }
+            SaveFormat::Gif => {
+                return Err(".gif ist nur als Inputformat fuer Load verfuegbar".to_string());
+            }
+        }
+
+        if start == 0 && len == self.data.work_data.len() {
+            self.workbench_dirty = false;
+        }
         self.status = format!("Saved {} byte(s) from Workbench to {}", len, path.display());
         Ok(())
     }
 
-    fn sector_file_path(base: &Path, start: usize, sector_size: usize) -> PathBuf {
-        let stem = base
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("rom");
-        let parent = base.parent().unwrap_or_else(|| Path::new("."));
-        let size_tag = if sector_size % 1024 == 0 {
-            format!("{}k", sector_size / 1024)
-        } else {
-            format!("{sector_size}b")
-        };
-        parent.join(format!("{stem}_sector_{start:05X}_{size_tag}.bin"))
-    }
-
     fn load_file_into_work(&mut self, start: usize, strict_len: Option<usize>) -> Result<(), String> {
         let path = PathBuf::from(self.file_path_input.trim());
-        let bytes = fs::read(&path).map_err(|e| format!("load failed: {e}"))?;
+        let fmt = Self::save_format_from_path(&path)?;
+        let bytes = match fmt {
+            SaveFormat::Bin | SaveFormat::Sector => {
+                fs::read(&path).map_err(|e| format!("load failed: {e}"))?
+            }
+            SaveFormat::Hex => {
+                let text = fs::read_to_string(&path).map_err(|e| format!("load failed: {e}"))?;
+                Self::decode_clipboard_hex(&text)?
+            }
+            SaveFormat::BinGz | SaveFormat::SectorGz => {
+                let file = fs::File::open(&path).map_err(|e| format!("load failed: {e}"))?;
+                let mut decoder = GzDecoder::new(file);
+                let mut out = Vec::new();
+                decoder
+                    .read_to_end(&mut out)
+                    .map_err(|e| format!("load failed: {e}"))?;
+                out
+            }
+            SaveFormat::HexGz => {
+                let file = fs::File::open(&path).map_err(|e| format!("load failed: {e}"))?;
+                let mut decoder = GzDecoder::new(file);
+                let mut text = String::new();
+                decoder
+                    .read_to_string(&mut text)
+                    .map_err(|e| format!("load failed: {e}"))?;
+                Self::decode_clipboard_hex(&text)?
+            }
+            SaveFormat::SectorsTgz => {
+                if start != 0 || strict_len.is_some() {
+                    return Err(".sectors.tgz kann nur als komplettes Image geladen werden".to_string());
+                }
+
+                #[derive(serde::Deserialize)]
+                struct ManifestSector {
+                    path: String,
+                    start: usize,
+                    end: usize,
+                    len: usize,
+                }
+
+                #[derive(serde::Deserialize)]
+                struct Manifest {
+                    total_size: usize,
+                    sectors: Vec<ManifestSector>,
+                }
+
+                let file = fs::File::open(&path).map_err(|e| format!("load failed: {e}"))?;
+                let decoder = GzDecoder::new(file);
+                let mut archive = tar::Archive::new(decoder);
+                let mut manifest: Option<Manifest> = None;
+                let mut blobs: HashMap<String, Vec<u8>> = HashMap::new();
+
+                let entries = archive.entries().map_err(|e| format!("load failed: {e}"))?;
+                for entry in entries {
+                    let mut entry = entry.map_err(|e| format!("load failed: {e}"))?;
+                    let path_name = entry
+                        .path()
+                        .map_err(|e| format!("load failed: {e}"))?
+                        .to_string_lossy()
+                        .to_string();
+                    let mut buf = Vec::new();
+                    entry
+                        .read_to_end(&mut buf)
+                        .map_err(|e| format!("load failed: {e}"))?;
+
+                    if path_name == "manifest.json" {
+                        manifest = Some(
+                            serde_json::from_slice(&buf)
+                                .map_err(|e| format!("load failed: invalid manifest.json ({e})"))?,
+                        );
+                    } else if path_name.ends_with(".sector") {
+                        blobs.insert(path_name, buf);
+                    }
+                }
+
+                let manifest = manifest.ok_or_else(|| "load failed: manifest.json fehlt".to_string())?;
+                let mut out = vec![0xFF; manifest.total_size];
+                for sector in manifest.sectors {
+                    let data = blobs
+                        .get(&sector.path)
+                        .ok_or_else(|| format!("load failed: fehlender Sektor {}", sector.path))?;
+                    if data.len() != sector.len {
+                        return Err(format!(
+                            "load failed: Sektorlaenge ungueltig fuer {} ({} statt {})",
+                            sector.path,
+                            data.len(),
+                            sector.len
+                        ));
+                    }
+                    if sector.end + 1 != sector.start + sector.len || sector.start + sector.len > out.len() {
+                        return Err(format!("load failed: ungueltige Manifest-Range {}", sector.path));
+                    }
+                    out[sector.start..sector.start + sector.len].copy_from_slice(data);
+                }
+                out
+            }
+            SaveFormat::Gif => {
+                let file = fs::File::open(&path).map_err(|e| format!("load failed: {e}"))?;
+                let mut options = gif::DecodeOptions::new();
+                options.set_color_output(gif::ColorOutput::Indexed);
+                let mut decoder = options
+                    .read_info(file)
+                    .map_err(|e| format!("load failed: gif decode error ({e})"))?;
+                let frame = decoder
+                    .read_next_frame()
+                    .map_err(|e| format!("load failed: gif frame error ({e})"))?
+                    .ok_or_else(|| "load failed: gif enthaelt keine Frames".to_string())?;
+                frame.buffer.to_vec()
+            }
+        };
+
         let expected = strict_len.unwrap_or(bytes.len());
         if let Some(exact) = strict_len {
             if bytes.len() != exact {
@@ -1496,6 +2152,7 @@ impl FlashBangGuiApp {
         }
         let copy_len = bytes.len().min(expected);
         self.data.work_data[start..start + copy_len].copy_from_slice(&bytes[..copy_len]);
+        self.workbench_dirty = true;
         self.rebuild_diff_report();
         self.status = format!("Loaded {} byte(s) from {} into workspace", copy_len, path.display());
         Ok(())
@@ -1533,6 +2190,7 @@ impl FlashBangGuiApp {
             return Err("copy range exceeds buffer bounds".to_string());
         }
         self.data.work_data[start..start + len].copy_from_slice(&self.data.ro_data[start..start + len]);
+        self.workbench_dirty = true;
         self.rebuild_diff_report();
         self.status = format!("Copied {len} byte(s) from Inspector into workspace at 0x{start:05X}");
         Ok(())
@@ -1878,8 +2536,18 @@ impl FlashBangGuiApp {
         let sector_size = self
             .sector_size()
             .ok_or_else(|| "chip unknown - cannot erase sector".to_string())?;
-        self.mark_ro_unknown(start, sector_size);
-        self.status = format!("Erased sector at 0x{start:05X}. Inspector marked stale/gray.");
+        if self.auto_fetch {
+            self.log_action(format!(
+                "Auto-Fetch: refreshing erased sector 0x{start:05X}+{sector_size}"
+            ));
+            self.dump_range_to_ro(start, sector_size)?;
+            self.status = format!(
+                "Erased sector at 0x{start:05X}. Auto-Fetch refreshed erased sector."
+            );
+        } else {
+            self.mark_ro_unknown(start, sector_size);
+            self.status = format!("Erased sector at 0x{start:05X}. Inspector marked stale/gray.");
+        }
         Ok(())
     }
 
@@ -1888,8 +2556,14 @@ impl FlashBangGuiApp {
         let chip_size = self
             .chip_size()
             .ok_or_else(|| "chip unknown - cannot erase chip".to_string())?;
-        self.mark_ro_unknown(0, chip_size);
-        self.status = "Chip erased. Entire Inspector view marked stale/gray.".to_string();
+        if self.auto_fetch {
+            self.log_action("Auto-Fetch: refreshing entire chip after erase".to_string());
+            self.dump_range_to_ro(0, chip_size)?;
+            self.status = "Chip erased. Auto-Fetch refreshed entire Inspector view.".to_string();
+        } else {
+            self.mark_ro_unknown(0, chip_size);
+            self.status = "Chip erased. Entire Inspector view marked stale/gray.".to_string();
+        }
         Ok(())
     }
 
@@ -1964,6 +2638,8 @@ impl FlashBangGuiApp {
         let sector_label_active_bg = egui::Color32::from_rgb(166, 154, 120);
         let sector_label_active_fg = egui::Color32::from_rgb(24, 22, 18);
         let sector_active_border = egui::Color32::from_rgb(124, 112, 84);
+        let cursor_color = egui::Color32::from_rgb(0x00, 0xE5, 0xFF);
+        let selection_color = egui::Color32::from_rgb(0xF3, 0x7F, 0xFB);
         let active_sector_from_input = Self::parse_int_input(&self.sector_input)
             .ok()
             .map(|v| v as usize);
@@ -1973,16 +2649,14 @@ impl FlashBangGuiApp {
             .map(|(start, len)| (start, start + len - 1));
 
         let row_height = ui.text_style_height(&egui::TextStyle::Monospace) + 2.0;
-        let byte_cell_width = match self.character_mode {
-            CharacterMode::Hex => 20.0,
-            CharacterMode::Ascii => 14.0,
-        };
+        let hex_cell_width = 20.0;
+        let ascii_cell_width = 8.0;
         let old_item_spacing = ui.spacing().item_spacing;
         let old_button_padding = ui.spacing().button_padding;
         let old_interact_size = ui.spacing().interact_size;
         ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
         ui.spacing_mut().button_padding = egui::vec2(0.0, 0.0);
-        ui.spacing_mut().interact_size = egui::vec2(byte_cell_width, row_height);
+        ui.spacing_mut().interact_size = egui::vec2(hex_cell_width, row_height);
 
         let scroll_output = egui::ScrollArea::both()
             .id_source(id_suffix)
@@ -1991,6 +2665,8 @@ impl FlashBangGuiApp {
             .show_rows(ui, row_height, total_rows, |ui, row_range| {
                 egui::Grid::new(format!("hex_grid_{id_suffix}"))
                     .striped(true)
+                    .min_col_width(0.0)
+                    .spacing(egui::vec2(0.0, 0.0))
                     .show(ui, |ui| {
                         for row in row_range {
                             let offset = row * BYTES_PER_ROW;
@@ -2060,14 +2736,9 @@ impl FlashBangGuiApp {
                                     && !self.data.ro_known.get(addr).copied().unwrap_or(false);
                                 let draw_cell_content = byte.is_some() && !unknown_inspector_cell;
 
-                                let mut text = byte
-                                    .map(|value| self.display_text_for_byte(value))
-                                    .unwrap_or_default();
-                                if self.character_mode == CharacterMode::Ascii && text.is_empty() {
-                                    text.push(' ');
-                                }
+                                let mut text = byte.map(|value| format!("{value:02X}")).unwrap_or_default();
                                 let (rect, response) = ui.allocate_exact_size(
-                                    egui::vec2(byte_cell_width, row_height),
+                                    egui::vec2(hex_cell_width, row_height),
                                     egui::Sense::click_and_drag(),
                                 );
 
@@ -2075,28 +2746,24 @@ impl FlashBangGuiApp {
                                     text.clear();
                                 }
 
-                                // Unknown inspector cells stay visually empty; known cells can optionally
-                                // render value-based palette background.
                                 if draw_cell_content && self.palette_background_enabled {
                                     if let Some(value) = byte {
                                         ui.painter().rect_filled(rect, 0.0, Self::palette_color(value));
                                     }
                                 }
 
-                                // Outline priority: cursor > selected range > active sector.
-                                // Keep one consistent stroke width to avoid perceived thickness jitter.
                                 let outline_width = 1.4;
                                 if selected {
                                     ui.painter().rect_stroke(
                                         rect.shrink(0.5),
                                         0.0,
-                                        egui::Stroke::new(outline_width, egui::Color32::from_rgb(40, 255, 80)),
+                                        egui::Stroke::new(outline_width, cursor_color),
                                     );
                                 } else if in_selected_range {
                                     ui.painter().rect_stroke(
                                         rect.shrink(0.5),
                                         0.0,
-                                        egui::Stroke::new(outline_width, egui::Color32::from_rgb(0xF3, 0x7F, 0xFB)),
+                                        egui::Stroke::new(outline_width, selection_color),
                                     );
                                 } else if in_active_sector {
                                     ui.painter().rect_stroke(
@@ -2132,10 +2799,12 @@ impl FlashBangGuiApp {
                                             Pane::Inspector => {
                                                 self.selected_ro_addr = Some(addr);
                                                 self.active_pane = Pane::Inspector;
+                                                self.set_pane_input_mode(Pane::Inspector, CharacterMode::Hex);
                                             }
                                             Pane::Workspace => {
                                                 self.selected_work_addr = Some(addr);
                                                 self.active_pane = Pane::Workspace;
+                                                self.set_pane_input_mode(Pane::Workspace, CharacterMode::Hex);
                                             }
                                         }
                                         self.range_start_input = format!("{addr:05X}");
@@ -2189,10 +2858,170 @@ impl FlashBangGuiApp {
                                         Pane::Inspector => {
                                             self.selected_ro_addr = Some(addr);
                                             self.active_pane = Pane::Inspector;
+                                            self.set_pane_input_mode(Pane::Inspector, CharacterMode::Hex);
                                         }
                                         Pane::Workspace => {
                                             self.selected_work_addr = Some(addr);
                                             self.active_pane = Pane::Workspace;
+                                            self.set_pane_input_mode(Pane::Workspace, CharacterMode::Hex);
+                                        }
+                                    }
+                                    self.sector_input = (addr / sector_size).to_string();
+                                    self.pending_hex_high_nibble = None;
+                                }
+                            }
+
+                            ui.add_space(8.0);
+
+                            for col in 0..BYTES_PER_ROW {
+                                let addr = offset + col;
+
+                                let byte = match pane {
+                                    Pane::Inspector => self.data.ro_data.get(addr).copied(),
+                                    Pane::Workspace => self.data.work_data.get(addr).copied(),
+                                };
+
+                                let color = if byte.is_some() {
+                                    match pane {
+                                        Pane::Inspector => self.byte_color_for_ro(addr),
+                                        Pane::Workspace => self.byte_color_for_work(addr),
+                                    }
+                                } else {
+                                    egui::Color32::TRANSPARENT
+                                };
+
+                                let selected = match pane {
+                                    Pane::Inspector => self.selected_ro_addr == Some(addr),
+                                    Pane::Workspace => self.selected_work_addr == Some(addr),
+                                };
+                                let in_selected_range = selected_range
+                                    .map(|(start, end)| addr >= start && addr <= end)
+                                    .unwrap_or(false);
+                                let in_active_sector = active_sector_from_input
+                                    .map(|sector_idx| addr / sector_size == sector_idx)
+                                    .unwrap_or(false);
+
+                                let unknown_inspector_cell = matches!(pane, Pane::Inspector)
+                                    && !self.data.ro_known.get(addr).copied().unwrap_or(false);
+                                let draw_cell_content = byte.is_some() && !unknown_inspector_cell;
+
+                                let mut text = byte
+                                    .map(Self::display_char_for_byte)
+                                    .map(|ch| ch.to_string())
+                                    .unwrap_or_default();
+                                if text.is_empty() {
+                                    text.push(' ');
+                                }
+                                let (rect, response) = ui.allocate_exact_size(
+                                    egui::vec2(ascii_cell_width, row_height),
+                                    egui::Sense::click_and_drag(),
+                                );
+
+                                if !draw_cell_content {
+                                    text.clear();
+                                }
+
+                                if draw_cell_content {
+                                    if selected {
+                                        ui.painter().rect_filled(rect, 0.0, cursor_color);
+                                    } else if in_selected_range {
+                                        ui.painter().rect_filled(rect, 0.0, selection_color);
+                                    } else if in_active_sector {
+                                        ui.painter().rect_filled(rect, 0.0, sector_label_active_bg);
+                                    }
+                                }
+                                if draw_cell_content {
+                                    Self::paint_outlined_cell_text(ui, rect, &text, color, selected);
+                                }
+                                if self.drag_select_pane.is_none()
+                                    && ui.ctx().input(|i| i.pointer.primary_pressed())
+                                    && ui
+                                        .ctx()
+                                        .input(|i| i.pointer.interact_pos())
+                                        .map(|pos| rect.contains(pos))
+                                        .unwrap_or(false)
+                                {
+                                    let shift_pressed = ui.ctx().input(|i| i.modifiers.shift);
+                                    self.drag_select_pane = Some(pane);
+
+                                    if shift_pressed {
+                                        let anchor = match pane {
+                                            Pane::Inspector => self.selected_ro_addr,
+                                            Pane::Workspace => self.selected_work_addr,
+                                        }
+                                        .unwrap_or(addr);
+                                        self.drag_select_anchor = Some(anchor);
+                                    } else {
+                                        self.drag_select_anchor = Some(addr);
+                                        match pane {
+                                            Pane::Inspector => {
+                                                self.selected_ro_addr = Some(addr);
+                                                self.active_pane = Pane::Inspector;
+                                                self.set_pane_input_mode(Pane::Inspector, CharacterMode::Ascii);
+                                            }
+                                            Pane::Workspace => {
+                                                self.selected_work_addr = Some(addr);
+                                                self.active_pane = Pane::Workspace;
+                                                self.set_pane_input_mode(Pane::Workspace, CharacterMode::Ascii);
+                                            }
+                                        }
+                                        self.range_start_input = format!("{addr:05X}");
+                                        self.range_len_input = "1".to_string();
+                                        self.pending_hex_high_nibble = None;
+                                    }
+                                    self.sector_input = (addr / sector_size).to_string();
+                                }
+
+                                if ui.ctx().input(|i| i.pointer.primary_down())
+                                    && self.drag_select_pane == Some(pane)
+                                    && ui
+                                        .ctx()
+                                        .input(|i| i.pointer.interact_pos())
+                                        .map(|pos| rect.contains(pos))
+                                        .unwrap_or(false)
+                                {
+                                    if let Some(start_anchor) = self.drag_select_anchor {
+                                        let start = start_anchor.min(addr);
+                                        let end = start_anchor.max(addr);
+                                        let len = end - start + 1;
+                                        self.range_start_input = format!("{start:05X}");
+                                        self.range_len_input = len.to_string();
+                                        self.status = format!(
+                                            "Range selected: 0x{start:05X}..0x{end:05X} ({len} byte(s))"
+                                        );
+                                        self.sector_input = (addr / sector_size).to_string();
+                                    }
+                                }
+
+                                if response.clicked() {
+                                    let shift_pressed = ui.ctx().input(|i| i.modifiers.shift);
+                                    let anchor = match pane {
+                                        Pane::Inspector => self.selected_ro_addr,
+                                        Pane::Workspace => self.selected_work_addr,
+                                    };
+
+                                    if shift_pressed {
+                                        if let Some(start_anchor) = anchor {
+                                            let start = start_anchor.min(addr);
+                                            let end = start_anchor.max(addr);
+                                            let len = end - start + 1;
+                                            self.range_start_input = format!("{start:05X}");
+                                            self.range_len_input = len.to_string();
+                                            self.status =
+                                                format!("Range selected: 0x{start:05X}..0x{end:05X} ({len} byte(s))");
+                                        }
+                                    }
+
+                                    match pane {
+                                        Pane::Inspector => {
+                                            self.selected_ro_addr = Some(addr);
+                                            self.active_pane = Pane::Inspector;
+                                            self.set_pane_input_mode(Pane::Inspector, CharacterMode::Ascii);
+                                        }
+                                        Pane::Workspace => {
+                                            self.selected_work_addr = Some(addr);
+                                            self.active_pane = Pane::Workspace;
+                                            self.set_pane_input_mode(Pane::Workspace, CharacterMode::Ascii);
                                         }
                                     }
                                     self.sector_input = (addr / sector_size).to_string();
@@ -2462,6 +3291,62 @@ impl eframe::App for FlashBangGuiApp {
             }
         }
 
+        if let Some(dialog) = self.save_format_dialog {
+            let mut cancel = false;
+            let mut selected_image: Option<ImageSaveFormat> = None;
+            let mut selected_sector: Option<SectorSaveFormat> = None;
+            egui::Window::new("Save Format")
+                .collapsible(false)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.label("Format auswaehlen:");
+                    ui.add_space(6.0);
+                    match dialog {
+                        SaveFormatDialogState::Image => {
+                            ui.horizontal_wrapped(|ui| {
+                                for fmt in ImageSaveFormat::ALL {
+                                    if ui.button(fmt.label()).clicked() {
+                                        selected_image = Some(fmt);
+                                    }
+                                }
+                            });
+                        }
+                        SaveFormatDialogState::Sector { .. } => {
+                            ui.horizontal_wrapped(|ui| {
+                                for fmt in SectorSaveFormat::ALL {
+                                    if ui.button(fmt.label()).clicked() {
+                                        selected_sector = Some(fmt);
+                                    }
+                                }
+                            });
+                        }
+                    }
+                    ui.add_space(8.0);
+                    if ui.button("Abbrechen").clicked() {
+                        cancel = true;
+                    }
+                });
+
+            if cancel {
+                self.save_format_dialog = None;
+                self.status = "Save cancelled".to_string();
+            }
+
+            if let Some(fmt) = selected_image {
+                self.save_format_dialog = None;
+                self.image_save_format = fmt;
+                self.save_image_with_format(fmt);
+            }
+
+            if let Some(fmt) = selected_sector {
+                if let SaveFormatDialogState::Sector { start, size } = dialog {
+                    self.save_format_dialog = None;
+                    self.sector_save_format = fmt;
+                    self.save_sector_with_format(start, size, fmt);
+                }
+            }
+        }
+
         if self.pending_action.is_some() {
             if self.pending_action_armed {
                 self.pending_action_armed = false;
@@ -2490,32 +3375,26 @@ impl FlashBangGuiApp {
 
         ui.horizontal_wrapped(|ui| {
             ui.label("Color:");
-            let diff_label = if self.diff_foreground_enabled {
-                "Diff: Aktiv"
-            } else {
-                "Diff: Nicht aktiv"
-            };
             if ui
-                .selectable_label(self.diff_foreground_enabled, diff_label)
+                .selectable_label(self.diff_foreground_enabled, "Diff")
                 .clicked()
             {
                 self.diff_foreground_enabled = !self.diff_foreground_enabled;
             }
-            let palette_label = if self.palette_background_enabled {
-                "Palette: Aktiv"
-            } else {
-                "Palette: Nicht aktiv"
-            };
             if ui
-                .selectable_label(self.palette_background_enabled, palette_label)
+                .selectable_label(self.palette_background_enabled, "Palette")
                 .clicked()
             {
                 self.palette_background_enabled = !self.palette_background_enabled;
             }
             ui.separator();
-            ui.label("Character Mode:");
-            ui.selectable_value(&mut self.character_mode, CharacterMode::Hex, "Hex");
-            ui.selectable_value(&mut self.character_mode, CharacterMode::Ascii, "ASCII (Latin-15)");
+            ui.label("Input Mode:");
+            let active_input_mode = self.pane_input_mode(self.active_pane);
+            let mode_label = match active_input_mode {
+                CharacterMode::Hex => "Hex (Cursor im Hex-Bereich)",
+                CharacterMode::Ascii => "ASCII (Cursor im ASCII-Bereich)",
+            };
+            ui.monospace(mode_label);
             ui.separator();
             ui.checkbox(&mut self.show_sector_boundaries, "Show Sector Boundaries");
             ui.checkbox(&mut self.allow_flash_gray, "Allow Flash on gray");
@@ -2530,16 +3409,10 @@ impl FlashBangGuiApp {
             ui.label("Sector:");
             ui.add(egui::TextEdit::singleline(&mut self.sector_input).desired_width(40.0));
             ui.separator();
-            ui.label("File:");
-            ui.add(egui::TextEdit::singleline(&mut self.file_path_input).desired_width(260.0));
-            ui.separator();
-            if ui.button("New").clicked() {
+            if ui.button("New Workbench").clicked() {
                 self.log_action("Button: New Workbench");
                 self.prompt_new_workbench();
             }
-            ui.separator();
-            ui.label(format!("Clipboard: {}", self.clipboard_desc));
-            ui.label("Ctrl+C copies active range, Ctrl+V pastes at workspace cursor");
         });
 
         ui.separator();
@@ -2557,7 +3430,7 @@ impl FlashBangGuiApp {
                     .map(|a| format!("0x{a:05X}"))
                     .unwrap_or_else(|| "-".to_string()),
             );
-            if self.character_mode == CharacterMode::Hex {
+            if self.workspace_input_mode == CharacterMode::Hex {
                 ui.separator();
                 ui.label("Hex nibble:");
                 ui.monospace(match self.pending_hex_high_nibble {
@@ -2604,9 +3477,9 @@ impl FlashBangGuiApp {
             .unwrap_or(false);
 
         let can_load_image = !self.data.work_data.is_empty();
-        let can_load_sector = valid_sector.is_some();
-        let can_save_image = !self.data.work_data.is_empty();
-        let can_save_sector = valid_sector.is_some();
+        let can_load_sector = !self.data.work_data.is_empty();
+        let can_save_image = !self.data.work_data.is_empty() && self.workbench_dirty;
+        let can_save_sector = valid_sector.is_some() && self.workbench_dirty;
 
         let reason_join = |reasons: Vec<&str>| -> Option<String> {
             if reasons.is_empty() {
@@ -2734,9 +3607,25 @@ impl FlashBangGuiApp {
             .or_else(|| if can_flash_sector { None } else { Some("Ungueltige Sektor-Eingabe".to_string()) });
 
         let reason_load_image = if can_load_image { None } else { Some("Workspace nicht verfuegbar".to_string()) };
-        let reason_load_sector = if can_load_sector { None } else { Some("Ungueltige Sektor-Eingabe".to_string()) };
-        let reason_save_image = if can_save_image { None } else { Some("Workspace nicht verfuegbar".to_string()) };
-        let reason_save_sector = if can_save_sector { None } else { Some("Ungueltige Sektor-Eingabe".to_string()) };
+        let reason_load_sector = if can_load_sector {
+            None
+        } else {
+            Some("Workspace nicht verfuegbar".to_string())
+        };
+        let reason_save_image = if can_save_image {
+            None
+        } else if self.data.work_data.is_empty() {
+            Some("Workspace nicht verfuegbar".to_string())
+        } else {
+            Some("Keine ungespeicherten Workbench-Aenderungen".to_string())
+        };
+        let reason_save_sector = if can_save_sector {
+            None
+        } else if !self.workbench_dirty {
+            Some("Keine ungespeicherten Workbench-Aenderungen".to_string())
+        } else {
+            Some("Ungueltige Sektor-Eingabe".to_string())
+        };
         let spacing_x = ui.spacing().item_spacing.x;
         const TRANSFER_BUTTON_WIDTH: f32 = 120.0;
         const TRANSFER_COL_PADDING_X: f32 = 12.0;
@@ -2771,6 +3660,26 @@ impl FlashBangGuiApp {
                         egui::Layout::top_down(egui::Align::Min),
                         |ui| {
                             ui.group(|ui| {
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.label("Image format:");
+                                    egui::ComboBox::from_id_source("save_image_format")
+                                        .selected_text(self.image_save_format.label())
+                                        .show_ui(ui, |ui| {
+                                            for fmt in ImageSaveFormat::ALL {
+                                                ui.selectable_value(&mut self.image_save_format, fmt, fmt.label());
+                                            }
+                                        });
+                                    ui.separator();
+                                    ui.label("Sector format:");
+                                    egui::ComboBox::from_id_source("save_sector_format")
+                                        .selected_text(self.sector_save_format.label())
+                                        .show_ui(ui, |ui| {
+                                            for fmt in SectorSaveFormat::ALL {
+                                                ui.selectable_value(&mut self.sector_save_format, fmt, fmt.label());
+                                            }
+                                        });
+                                });
+                                ui.separator();
                                 ui.horizontal_wrapped(|ui| {
                                     if self.operation_button_enabled(
                                         ui,
@@ -3128,13 +4037,28 @@ impl FlashBangGuiApp {
                                     ).clicked() {
                                             self.log_action(format!("Button: Load Sector (sector={})", self.sector_input));
                                         if self.choose_open_file() {
-                                            match self.parse_sector_input() {
-                                                Ok((_idx, start, size)) => {
-                                                    if let Err(e) = self.load_file_into_work(start, Some(size)) {
-                                                        self.status = e;
+                                            let path = PathBuf::from(self.file_path_input.trim());
+                                            let default_start = Self::infer_start_from_filename(&path)
+                                                .or_else(|| self.parse_sector_input().ok().map(|(_, start, _)| start))
+                                                .unwrap_or(0);
+                                            let default_start_text = format!("0x{default_start:05X}");
+                                            if let Some(start_text) = input_box(
+                                                "Load Sector Position",
+                                                "Startadresse fuer das Laden dieses Files (Hex oder Dezimal)",
+                                                &default_start_text,
+                                            ) {
+                                                match Self::parse_int_input(&start_text) {
+                                                    Ok(start) => {
+                                                        if let Err(e) = self.load_file_into_work(start as usize, None) {
+                                                            self.status = e;
+                                                        }
+                                                    }
+                                                    Err(e) => {
+                                                        self.status = format!("Invalid load position: {e}");
                                                     }
                                                 }
-                                                Err(e) => self.status = format!("Invalid sector: {e}"),
+                                            } else {
+                                                self.status = "Load cancelled".to_string();
                                             }
                                         } else {
                                             self.status = "Load cancelled".to_string();
@@ -3156,17 +4080,7 @@ impl FlashBangGuiApp {
                                         "Save Image (Workbench -> Disk)",
                                     ).clicked() {
                                             self.log_action("Button: Save Image");
-                                        if self.file_path_input.trim().is_empty() && !self.choose_save_file("rom_inspector.bin") {
-                                            self.status = "Save cancelled".to_string();
-                                        } else {
-                                            let path = PathBuf::from(self.file_path_input.trim());
-                                            if !path.as_os_str().is_empty() {
-                                                let size = self.data.work_data.len();
-                                                if let Err(e) = self.save_work_range_to_file(0, size, &path) {
-                                                    self.status = e;
-                                                }
-                                            }
-                                        }
+                                        self.save_format_dialog = Some(SaveFormatDialogState::Image);
                                     }
                                     if self.operation_button_enabled(
                                         ui,
@@ -3186,24 +4100,8 @@ impl FlashBangGuiApp {
                                             self.log_action(format!("Button: Save Sector (sector={})", self.sector_input));
                                         match self.parse_sector_input() {
                                             Ok((_idx, start, size)) => {
-                                                let previous = self.file_path_input.clone();
-                                                let suggested =
-                                                    Self::sector_file_path(Path::new(self.file_path_input.trim()), start, size);
-                                                let suggested_name = suggested
-                                                    .file_name()
-                                                    .and_then(|name| name.to_str())
-                                                    .unwrap_or("rom_sector.bin")
-                                                    .to_string();
-                                                self.file_path_input = suggested.display().to_string();
-                                                if self.choose_save_file(&suggested_name) {
-                                                    let sector_path = PathBuf::from(self.file_path_input.trim());
-                                                    if let Err(e) = self.save_work_range_to_file(start, size, &sector_path) {
-                                                        self.status = e;
-                                                    }
-                                                } else {
-                                                    self.file_path_input = previous;
-                                                    self.status = "Save cancelled".to_string();
-                                                }
+                                                self.save_format_dialog =
+                                                    Some(SaveFormatDialogState::Sector { start, size });
                                             }
                                             Err(e) => self.status = format!("Invalid sector: {e}"),
                                         }
@@ -3268,13 +4166,6 @@ mod tests {
         app.data.ro_data[0x80] = 0b1111_0000;
         app.data.work_data[0x80] = 0b1111_1000;
         assert_eq!(app.byte_state(0x80), ByteState::Red);
-    }
-
-    #[test]
-    fn builds_sector_file_name_with_address_and_size() {
-        let base = PathBuf::from("captures/rom_dump.bin");
-        let path = FlashBangGuiApp::sector_file_path(&base, 0x1A000, 4096);
-        assert_eq!(path, PathBuf::from("captures/rom_dump_sector_1A000_4k.bin"));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 [package]
 name = "flashbang-studio"
-version = "0.4.3"
+version = "0.4.5"
 edition = "2021"
 
 [dependencies]
@@ -16,3 +16,7 @@ url = "=2.4.1"
 serialport = "=4.3.0"
 tinyfiledialogs = "=3.9.1"
 image = { version = "=0.24.7", default-features = false, features = ["png"] }
+chrono = { version = "0.4", default-features = true }
+flate2 = "1"
+tar = "0.4"
+gif = "0.13"

@@ -27,6 +27,15 @@ FlashBangFirmware/include/generated_build_info.h
 FlashBangStudio/flashbang-verify-report.txt
 FlashBangStudio/flashbang-verify-report.json
 
+# ROM image artifacts
+*.bin
+*.bin.gz
+*.hex
+*.hex.gz
+*.sector
+*.sector.gz
+*.sectors.tgz
+
 # Python
 __pycache__/
 *.pyc
