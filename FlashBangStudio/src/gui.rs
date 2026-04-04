@@ -45,12 +45,6 @@ struct AppData {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum ColorMode {
-    Diff,
-    Palette,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
 enum CharacterMode {
     Hex,
     Ascii,
@@ -171,7 +165,8 @@ pub struct FlashBangGuiApp {
     pending_action: Option<DeferredAction>,
     pending_action_armed: bool,
     status: String,
-    color_mode: ColorMode,
+    diff_foreground_enabled: bool,
+    palette_background_enabled: bool,
     character_mode: CharacterMode,
     show_sector_boundaries: bool,
     allow_flash_gray: bool,
@@ -186,6 +181,8 @@ pub struct FlashBangGuiApp {
     selected_ro_addr: Option<usize>,
     selected_work_addr: Option<usize>,
     active_pane: Pane,
+    drag_select_pane: Option<Pane>,
+    drag_select_anchor: Option<usize>,
     pending_hex_high_nibble: Option<u8>,
     icon_assets: Option<IconAssets>,
     upper_area_ratio: f32,
@@ -242,7 +239,8 @@ impl FlashBangGuiApp {
             pending_action: None,
             pending_action_armed: false,
             status: "Nicht verbunden. Verbinde ein Geraet fuer Live-Daten (Preview aktiv).".to_string(),
-            color_mode: ColorMode::Diff,
+            diff_foreground_enabled: true,
+            palette_background_enabled: true,
             character_mode: CharacterMode::Hex,
             show_sector_boundaries: true,
             allow_flash_gray: false,
@@ -257,6 +255,8 @@ impl FlashBangGuiApp {
             selected_ro_addr: None,
             selected_work_addr: None,
             active_pane: Pane::Workspace,
+            drag_select_pane: None,
+            drag_select_anchor: None,
             pending_hex_high_nibble: None,
             icon_assets: None,
             upper_area_ratio: 0.75,
@@ -1894,16 +1894,18 @@ impl FlashBangGuiApp {
     }
 
     fn byte_color_for_ro(&self, addr: usize) -> egui::Color32 {
-        match self.color_mode {
-            ColorMode::Diff => Self::diff_color_for_state(self.byte_state(addr)),
-            ColorMode::Palette => Self::palette_color(self.data.ro_data[addr]),
+        if self.diff_foreground_enabled {
+            Self::diff_color_for_state(self.byte_state(addr))
+        } else {
+            egui::Color32::from_rgb(200, 200, 200)
         }
     }
 
     fn byte_color_for_work(&self, addr: usize) -> egui::Color32 {
-        match self.color_mode {
-            ColorMode::Diff => Self::diff_color_for_state(self.byte_state(addr)),
-            ColorMode::Palette => Self::palette_color(self.data.work_data[addr]),
+        if self.diff_foreground_enabled {
+            Self::diff_color_for_state(self.byte_state(addr))
+        } else {
+            egui::Color32::from_rgb(200, 200, 200)
         }
     }
 
@@ -2019,7 +2021,11 @@ impl FlashBangGuiApp {
                             }
                             ui.add_sized(
                                 [52.0, row_height],
-                                egui::Label::new(egui::RichText::new(format!("{offset:05X}")).monospace()),
+                                egui::Label::new(
+                                    egui::RichText::new(format!("{offset:05X}"))
+                                        .color(egui::Color32::from_rgb(0x57, 0xAD, 0xCA))
+                                        .monospace(),
+                                ),
                             );
 
                             for col in 0..BYTES_PER_ROW {
@@ -2062,15 +2068,16 @@ impl FlashBangGuiApp {
                                 }
                                 let (rect, response) = ui.allocate_exact_size(
                                     egui::vec2(byte_cell_width, row_height),
-                                    egui::Sense::click(),
+                                    egui::Sense::click_and_drag(),
                                 );
 
                                 if !draw_cell_content {
                                     text.clear();
                                 }
 
-                                // Unknown inspector cells stay visually empty; known cells keep value fill.
-                                if draw_cell_content {
+                                // Unknown inspector cells stay visually empty; known cells can optionally
+                                // render value-based palette background.
+                                if draw_cell_content && self.palette_background_enabled {
                                     if let Some(value) = byte {
                                         ui.painter().rect_filled(rect, 0.0, Self::palette_color(value));
                                     }
@@ -2089,7 +2096,7 @@ impl FlashBangGuiApp {
                                     ui.painter().rect_stroke(
                                         rect.shrink(0.5),
                                         0.0,
-                                        egui::Stroke::new(outline_width, egui::Color32::from_rgb(96, 208, 255)),
+                                        egui::Stroke::new(outline_width, egui::Color32::from_rgb(0xF3, 0x7F, 0xFB)),
                                     );
                                 } else if in_active_sector {
                                     ui.painter().rect_stroke(
@@ -2101,6 +2108,64 @@ impl FlashBangGuiApp {
                                 if draw_cell_content {
                                     Self::paint_outlined_cell_text(ui, rect, &text, color, selected);
                                 }
+                                if self.drag_select_pane.is_none()
+                                    && ui.ctx().input(|i| i.pointer.primary_pressed())
+                                    && ui
+                                        .ctx()
+                                        .input(|i| i.pointer.interact_pos())
+                                        .map(|pos| rect.contains(pos))
+                                        .unwrap_or(false)
+                                {
+                                    let shift_pressed = ui.ctx().input(|i| i.modifiers.shift);
+                                    self.drag_select_pane = Some(pane);
+
+                                    if shift_pressed {
+                                        let anchor = match pane {
+                                            Pane::Inspector => self.selected_ro_addr,
+                                            Pane::Workspace => self.selected_work_addr,
+                                        }
+                                        .unwrap_or(addr);
+                                        self.drag_select_anchor = Some(anchor);
+                                    } else {
+                                        self.drag_select_anchor = Some(addr);
+                                        match pane {
+                                            Pane::Inspector => {
+                                                self.selected_ro_addr = Some(addr);
+                                                self.active_pane = Pane::Inspector;
+                                            }
+                                            Pane::Workspace => {
+                                                self.selected_work_addr = Some(addr);
+                                                self.active_pane = Pane::Workspace;
+                                            }
+                                        }
+                                        self.range_start_input = format!("{addr:05X}");
+                                        self.range_len_input = "1".to_string();
+                                        self.pending_hex_high_nibble = None;
+                                    }
+                                    self.sector_input = (addr / sector_size).to_string();
+                                }
+
+                                if ui.ctx().input(|i| i.pointer.primary_down())
+                                    && self.drag_select_pane == Some(pane)
+                                    && ui
+                                        .ctx()
+                                        .input(|i| i.pointer.interact_pos())
+                                        .map(|pos| rect.contains(pos))
+                                        .unwrap_or(false)
+                                {
+                                    if let Some(start_anchor) = self.drag_select_anchor {
+                                        let start = start_anchor.min(addr);
+                                        let end = start_anchor.max(addr);
+                                        let len = end - start + 1;
+                                        self.range_start_input = format!("{start:05X}");
+                                        self.range_len_input = len.to_string();
+                                        self.status = format!(
+                                            "Range selected: 0x{start:05X}..0x{end:05X} ({len} byte(s))"
+                                        );
+                                        self.sector_input = (addr / sector_size).to_string();
+                                    }
+                                }
+
                                 if response.clicked() {
                                     let shift_pressed = ui.ctx().input(|i| i.modifiers.shift);
                                     let anchor = match pane {
@@ -2150,6 +2215,11 @@ impl FlashBangGuiApp {
 impl eframe::App for FlashBangGuiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.ensure_solid_scrollbars(ctx);
+
+        if !ctx.input(|i| i.pointer.primary_down()) {
+            self.drag_select_pane = None;
+            self.drag_select_anchor = None;
+        }
 
         let mut do_refresh = false;
         let mut do_connect = false;
@@ -2419,9 +2489,29 @@ impl FlashBangGuiApp {
         self.ensure_chip_buffers();
 
         ui.horizontal_wrapped(|ui| {
-            ui.label("Color Mode:");
-            ui.selectable_value(&mut self.color_mode, ColorMode::Diff, "Diff");
-            ui.selectable_value(&mut self.color_mode, ColorMode::Palette, "Palette");
+            ui.label("Color:");
+            let diff_label = if self.diff_foreground_enabled {
+                "Diff: Aktiv"
+            } else {
+                "Diff: Nicht aktiv"
+            };
+            if ui
+                .selectable_label(self.diff_foreground_enabled, diff_label)
+                .clicked()
+            {
+                self.diff_foreground_enabled = !self.diff_foreground_enabled;
+            }
+            let palette_label = if self.palette_background_enabled {
+                "Palette: Aktiv"
+            } else {
+                "Palette: Nicht aktiv"
+            };
+            if ui
+                .selectable_label(self.palette_background_enabled, palette_label)
+                .clicked()
+            {
+                self.palette_background_enabled = !self.palette_background_enabled;
+            }
             ui.separator();
             ui.label("Character Mode:");
             ui.selectable_value(&mut self.character_mode, CharacterMode::Hex, "Hex");
