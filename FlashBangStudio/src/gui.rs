@@ -1,12 +1,13 @@
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::collections::HashMap;
 use std::time::Duration;
 
 use eframe::egui;
 use serialport::SerialPort;
-use tinyfiledialogs::{open_file_dialog, save_file_dialog};
+use tinyfiledialogs::{input_box, open_file_dialog, save_file_dialog};
 
 use crate::{
     driver_catalog,
@@ -126,6 +127,7 @@ struct WireLogEntry {
 #[derive(Clone)]
 enum WarningAction {
     SwitchDriverAndInitialize { driver_id: String },
+    ResizeWorkbench { new_size: usize },
 }
 
 #[derive(Clone)]
@@ -158,6 +160,7 @@ pub struct FlashBangGuiApp {
     serial_handle: Option<Box<dyn SerialPort>>,
     wire_log: Vec<WireLogEntry>,
     serial_monitor_text: String,
+    serial_primary_selection: String,
     available_drivers: Vec<driver_catalog::DriverEntry>,
     selected_driver_index: usize,
     uploaded_driver_id: Option<String>,
@@ -186,6 +189,8 @@ pub struct FlashBangGuiApp {
     pending_hex_high_nibble: Option<u8>,
     icon_assets: Option<IconAssets>,
     upper_area_ratio: f32,
+    hex_scroll_y: f32,
+    scroll_style_initialized: bool,
 }
 
 impl FlashBangGuiApp {
@@ -212,7 +217,7 @@ impl FlashBangGuiApp {
         // Keep the upper GUI panes visible before a chip is identified.
         data.ro_data = vec![0xFF; PREVIEW_SIZE];
         data.ro_known = vec![false; PREVIEW_SIZE];
-        data.work_data = vec![0xFF; PREVIEW_SIZE];
+        data.work_data = Vec::new();
 
         let available_ports = list_serial_ports().unwrap_or_default();
         let available_drivers = driver_catalog::list_drivers();
@@ -226,6 +231,7 @@ impl FlashBangGuiApp {
             serial_handle: None,
             wire_log: Vec::new(),
             serial_monitor_text: String::new(),
+            serial_primary_selection: String::new(),
             available_drivers,
             selected_driver_index: 0,
             uploaded_driver_id: None,
@@ -254,30 +260,190 @@ impl FlashBangGuiApp {
             pending_hex_high_nibble: None,
             icon_assets: None,
             upper_area_ratio: 0.75,
+            hex_scroll_y: 0.0,
+            scroll_style_initialized: false,
         };
         app
+    }
+
+    fn ensure_solid_scrollbars(&mut self, ctx: &egui::Context) {
+        if self.scroll_style_initialized {
+            return;
+        }
+
+        ctx.style_mut(|style| {
+            style.spacing.scroll = egui::style::ScrollStyle::solid();
+            style.spacing.scroll.bar_width = 12.0;
+            style.spacing.scroll.handle_min_length = 20.0;
+            style.spacing.scroll.bar_inner_margin = 2.0;
+            style.spacing.scroll.bar_outer_margin = 1.0;
+        });
+
+        self.scroll_style_initialized = true;
     }
 
     fn draw_serial_monitor(&mut self, ui: &mut egui::Ui) {
         ui.separator();
         ui.horizontal(|ui| {
-            ui.heading("Serial Monitor (TX/RX)");
+            ui.heading("Log");
             if ui.button("Clear").clicked() {
                 self.serial_monitor_text.clear();
+                self.serial_primary_selection.clear();
             }
-            ui.label("(Text markierbar, Ctrl+X schneidet aus)");
+            ui.label("(TX rot, RX gruen, UI blau | Markieren kopiert auch in Linux-Primary)");
         });
         egui::ScrollArea::vertical()
             .id_source("serial_monitor_scroll")
             .stick_to_bottom(true)
+            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
             .show(ui, |ui| {
-                ui.add(
-                    egui::TextEdit::multiline(&mut self.serial_monitor_text)
-                        .font(egui::TextStyle::Monospace)
-                        .desired_rows(10)
-                        .desired_width(f32::INFINITY),
-                );
+                let mut layouter = |ui: &egui::Ui, text: &str, wrap_width: f32| {
+                    let mut job = Self::serial_layout_job(text);
+                    job.wrap.max_width = wrap_width;
+                    ui.fonts(|f| f.layout_job(job))
+                };
+
+                let output = egui::TextEdit::multiline(&mut self.serial_monitor_text)
+                    .font(egui::TextStyle::Monospace)
+                    .desired_rows(10)
+                    .desired_width(f32::INFINITY)
+                    .layouter(&mut layouter)
+                    .show(ui);
+
+                if let Some(range) = output.cursor_range {
+                    if let Some(selected) = Self::selected_text_from_range(&self.serial_monitor_text, range) {
+                        if selected != self.serial_primary_selection {
+                            self.serial_primary_selection = selected.clone();
+                            self.copy_to_linux_primary_selection(&selected);
+                        }
+                    }
+                }
             });
+    }
+
+    fn serial_layout_job(text: &str) -> egui::text::LayoutJob {
+        let mut job = egui::text::LayoutJob::default();
+
+        for line in text.split_inclusive('\n') {
+            let color = if line.starts_with("[TX]") {
+                egui::Color32::from_rgb(255, 80, 80)
+            } else if line.starts_with("[RX]") {
+                egui::Color32::from_rgb(100, 220, 100)
+            } else {
+                egui::Color32::from_rgb(136, 136, 255)
+            };
+
+            job.append(
+                line,
+                0.0,
+                egui::TextFormat {
+                    font_id: egui::FontId::monospace(12.0),
+                    color,
+                    ..Default::default()
+                },
+            );
+        }
+
+        job
+    }
+
+    fn selected_text_from_range(text: &str, range: egui::text_edit::CursorRange) -> Option<String> {
+        let start_char = range.primary.ccursor.index.min(range.secondary.ccursor.index);
+        let end_char = range.primary.ccursor.index.max(range.secondary.ccursor.index);
+        if start_char == end_char {
+            return None;
+        }
+
+        let start_byte = Self::char_to_byte_index(text, start_char);
+        let end_byte = Self::char_to_byte_index(text, end_char);
+        if start_byte >= end_byte || end_byte > text.len() {
+            return None;
+        }
+
+        Some(text[start_byte..end_byte].to_string())
+    }
+
+    fn char_to_byte_index(text: &str, char_index: usize) -> usize {
+        if char_index == 0 {
+            return 0;
+        }
+        text.char_indices()
+            .nth(char_index)
+            .map(|(idx, _)| idx)
+            .unwrap_or(text.len())
+    }
+
+    fn copy_to_linux_primary_selection(&mut self, text: &str) {
+        #[cfg(target_os = "linux")]
+        {
+            if text.is_empty() {
+                return;
+            }
+
+            if Self::run_selection_command("wl-copy", &["--primary", "--type", "text/plain;charset=utf-8"], text)
+                || Self::run_selection_command("xclip", &["-selection", "primary", "-in"], text)
+                || Self::run_selection_command("xsel", &["--primary", "--input"], text)
+            {
+                return;
+            }
+
+            self.log_action("Hinweis: Linux-Primary-Clipboard konnte nicht gesetzt werden (wl-copy/xclip/xsel fehlt).".to_string());
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn run_selection_command(bin: &str, args: &[&str], text: &str) -> bool {
+        let mut child = match Command::new(bin)
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        {
+            Ok(child) => child,
+            Err(_) => return false,
+        };
+
+        if let Some(mut stdin) = child.stdin.take() {
+            if stdin.write_all(text.as_bytes()).is_err() {
+                let _ = child.wait();
+                return false;
+            }
+        } else {
+            let _ = child.wait();
+            return false;
+        }
+
+        child.wait().map(|status| status.success()).unwrap_or(false)
+    }
+
+    fn warning_action_label(action: &WarningAction) -> &'static str {
+        match action {
+            WarningAction::SwitchDriverAndInitialize { .. } => "Treiber wechseln & initialisieren",
+            WarningAction::ResizeWorkbench { .. } => "Workbench vergroessern",
+        }
+    }
+
+    fn execute_warning_action(&mut self, action: WarningAction) {
+        match action {
+            WarningAction::SwitchDriverAndInitialize { driver_id } => {
+                self.log_action(format!(
+                    "Dialog-Aktion: Treiber wechseln & initialisieren -> {}",
+                    driver_id
+                ));
+                if let Err(e) = self.switch_to_driver_and_initialize(&driver_id) {
+                    self.status = format!("Treiberwechsel fehlgeschlagen: {e}");
+                }
+            }
+            WarningAction::ResizeWorkbench { new_size } => {
+                self.log_action(format!(
+                    "Dialog-Aktion: Workbench vergroessern -> {} bytes",
+                    new_size
+                ));
+                self.init_workbench(new_size);
+                self.status = format!("Workbench vergroessert auf {} byte(s)", new_size);
+            }
+        }
     }
 
     fn ensure_chip_buffers(&mut self) {
@@ -288,16 +454,91 @@ impl FlashBangGuiApp {
         if self.data.ro_data.len() != wanted {
             self.data.ro_data = vec![0xFF; wanted];
             self.data.ro_known = vec![false; wanted];
-            self.data.work_data = vec![0xFF; wanted];
             self.selected_ro_addr = None;
-            self.selected_work_addr = None;
-            self.pending_hex_high_nibble = None;
             self.rebuild_diff_report();
         }
     }
 
+    fn init_workbench(&mut self, size: usize) {
+        self.data.work_data = vec![0xFF; size];
+        self.selected_work_addr = None;
+        self.pending_hex_high_nibble = None;
+        self.rebuild_diff_report();
+    }
+
+    fn prompt_new_workbench(&mut self) {
+        let default_size = self
+            .data
+            .chip
+            .as_ref()
+            .map(|c| format!("0x{:X}", c.size_bytes))
+            .unwrap_or_else(|| "0x80000".to_string());
+
+        let Some(input) = input_box(
+            "Neue Workbench",
+            "Groesse in Bytes (dezimal oder hex, z.B. 524288 oder 0x80000)",
+            &default_size,
+        ) else {
+            self.status = "Neue Workbench abgebrochen".to_string();
+            return;
+        };
+
+        match Self::parse_int_input(&input) {
+            Ok(size_u32) => {
+                let size = size_u32 as usize;
+                if size == 0 {
+                    self.status = "Neue Workbench fehlgeschlagen: Groesse muss > 0 sein".to_string();
+                    return;
+                }
+                self.init_workbench(size);
+                self.status = format!("Neue leere Workbench erstellt: {} byte(s)", size);
+            }
+            Err(e) => {
+                self.status = format!("Neue Workbench fehlgeschlagen: {e}");
+            }
+        }
+    }
+
+    fn visible_grid_size(&self) -> usize {
+        let chip = self.data.chip.as_ref().map(|c| c.size_bytes as usize).unwrap_or(0);
+        chip.max(self.data.ro_data.len()).max(self.data.work_data.len())
+    }
+
+    fn check_or_init_workbench_for_fetch_image(&mut self, chip_size: usize) {
+        let work_size = self.data.work_data.len();
+        if work_size == 0 {
+            self.init_workbench(chip_size);
+            self.log_action(format!(
+                "Workbench auto-initialisiert fuer Fetch Image: {} byte(s)",
+                chip_size
+            ));
+            return;
+        }
+
+        if work_size > chip_size {
+            self.warn_dialog(format!(
+                "Hinweis: Workbench ({work_size} Bytes) ist groesser als erkannter Chip ({chip_size} Bytes)."
+            ));
+            return;
+        }
+
+        if work_size < chip_size {
+            self.warn_dialog_with_action(
+                format!(
+                    "Hinweis: Erkannter Chip ({chip_size} Bytes) ist groesser als Workbench ({work_size} Bytes). Workbench vergroessern?"
+                ),
+                Some(WarningAction::ResizeWorkbench {
+                    new_size: chip_size,
+                }),
+            );
+        }
+    }
+
     fn rebuild_diff_report(&mut self) {
-        if self.data.ro_data.is_empty() || self.data.work_data.is_empty() {
+        if self.data.ro_data.is_empty()
+            || self.data.work_data.is_empty()
+            || self.data.ro_data.len() != self.data.work_data.len()
+        {
             self.data.diff_report = None;
             return;
         }
@@ -308,8 +549,8 @@ impl FlashBangGuiApp {
     fn chip_size(&self) -> Option<usize> {
         if let Some(chip) = self.data.chip.as_ref() {
             Some(chip.size_bytes as usize)
-        } else if !self.data.work_data.is_empty() {
-            Some(self.data.work_data.len())
+        } else if !self.data.ro_data.is_empty() {
+            Some(self.data.ro_data.len())
         } else {
             None
         }
@@ -885,6 +1126,7 @@ impl FlashBangGuiApp {
                 let size = self
                     .chip_size()
                     .ok_or_else(|| "fetch image failed: kein erkannter Chip".to_string())?;
+                self.check_or_init_workbench_for_fetch_image(size);
                 self.dump_range_to_ro(0, size)
             }
             DeferredAction::FetchRange { start, len } => self.dump_range_to_ro(start, len),
@@ -1066,6 +1308,7 @@ impl FlashBangGuiApp {
                                 if self.pending_connect_auto_fetch && self.auto_fetch {
                                     self.pending_connect_auto_fetch = false;
                                     self.reset_inspector_buffers();
+                                    self.check_or_init_workbench_for_fetch_image(chip.size_bytes as usize);
                                     self.log_action(
                                         "Auto-Fetch: running Fetch Image after connect/driver validation"
                                             .to_string(),
@@ -1706,14 +1949,19 @@ impl FlashBangGuiApp {
     }
 
     fn draw_byte_grid(&mut self, ui: &mut egui::Ui, pane: Pane, id_suffix: &str) {
-        let Some(chip_size) = self.chip_size() else {
+        let chip_size = self.visible_grid_size();
+        if chip_size == 0 {
             ui.label("No chip identified.");
             return;
-        };
+        }
 
         const BYTES_PER_ROW: usize = 16;
-        let total_rows = chip_size / BYTES_PER_ROW;
+        let total_rows = chip_size.div_ceil(BYTES_PER_ROW);
         let sector_size = self.sector_size().unwrap_or(4096);
+        let sector_label_inactive = egui::Color32::from_rgb(166, 154, 120);
+        let sector_label_active_bg = egui::Color32::from_rgb(166, 154, 120);
+        let sector_label_active_fg = egui::Color32::from_rgb(24, 22, 18);
+        let sector_active_border = egui::Color32::from_rgb(124, 112, 84);
         let active_sector_from_input = Self::parse_int_input(&self.sector_input)
             .ok()
             .map(|v| v as usize);
@@ -1734,8 +1982,10 @@ impl FlashBangGuiApp {
         ui.spacing_mut().button_padding = egui::vec2(0.0, 0.0);
         ui.spacing_mut().interact_size = egui::vec2(byte_cell_width, row_height);
 
-        egui::ScrollArea::both()
+        let scroll_output = egui::ScrollArea::both()
             .id_source(id_suffix)
+            .vertical_scroll_offset(self.hex_scroll_y)
+            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
             .show_rows(ui, row_height, total_rows, |ui, row_range| {
                 egui::Grid::new(format!("hex_grid_{id_suffix}"))
                     .striped(true)
@@ -1745,24 +1995,25 @@ impl FlashBangGuiApp {
                             if self.show_sector_boundaries && offset % sector_size == 0 {
                                 let sector_idx = offset / sector_size;
                                 let is_active_sector = active_sector_from_input == Some(sector_idx);
-                                let sector_label = if is_active_sector {
-                                    format!(">S{:03}", sector_idx)
+                                let sector_label = format!("S{:03}", sector_idx);
+                                if is_active_sector {
+                                    let rich = egui::RichText::new(sector_label)
+                                        .color(sector_label_active_fg)
+                                        .monospace();
+                                    let button = egui::Button::new(rich)
+                                        .fill(sector_label_active_bg)
+                                        .stroke(egui::Stroke::new(1.0, sector_active_border));
+                                    ui.add_sized([34.0, row_height], button);
                                 } else {
-                                    format!("S{:03}", sector_idx)
-                                };
-                                let sector_color = if is_active_sector {
-                                    egui::Color32::from_rgb(255, 40, 40)
-                                } else {
-                                    egui::Color32::from_rgb(120, 120, 120)
-                                };
-                                ui.add_sized(
-                                    [34.0, row_height],
-                                    egui::Label::new(
-                                        egui::RichText::new(sector_label)
-                                            .color(sector_color)
-                                            .monospace(),
-                                    ),
-                                );
+                                    ui.add_sized(
+                                        [34.0, row_height],
+                                        egui::Label::new(
+                                            egui::RichText::new(sector_label)
+                                                .color(sector_label_inactive)
+                                                .monospace(),
+                                        ),
+                                    );
+                                }
                             } else {
                                 ui.add_sized([34.0, row_height], egui::Label::new("   "));
                             }
@@ -1773,19 +2024,19 @@ impl FlashBangGuiApp {
 
                             for col in 0..BYTES_PER_ROW {
                                 let addr = offset + col;
-                                if addr >= self.data.work_data.len() {
-                                    ui.label("  ");
-                                    continue;
-                                }
 
                                 let byte = match pane {
-                                    Pane::Inspector => self.data.ro_data[addr],
-                                    Pane::Workspace => self.data.work_data[addr],
+                                    Pane::Inspector => self.data.ro_data.get(addr).copied(),
+                                    Pane::Workspace => self.data.work_data.get(addr).copied(),
                                 };
 
-                                let color = match pane {
-                                    Pane::Inspector => self.byte_color_for_ro(addr),
-                                    Pane::Workspace => self.byte_color_for_work(addr),
+                                let color = if byte.is_some() {
+                                    match pane {
+                                        Pane::Inspector => self.byte_color_for_ro(addr),
+                                        Pane::Workspace => self.byte_color_for_work(addr),
+                                    }
+                                } else {
+                                    egui::Color32::TRANSPARENT
                                 };
 
                                 let selected = match pane {
@@ -1799,7 +2050,13 @@ impl FlashBangGuiApp {
                                     .map(|sector_idx| addr / sector_size == sector_idx)
                                     .unwrap_or(false);
 
-                                let mut text = self.display_text_for_byte(byte);
+                                let unknown_inspector_cell = matches!(pane, Pane::Inspector)
+                                    && !self.data.ro_known.get(addr).copied().unwrap_or(false);
+                                let draw_cell_content = byte.is_some() && !unknown_inspector_cell;
+
+                                let mut text = byte
+                                    .map(|value| self.display_text_for_byte(value))
+                                    .unwrap_or_default();
                                 if self.character_mode == CharacterMode::Ascii && text.is_empty() {
                                     text.push(' ');
                                 }
@@ -1808,8 +2065,16 @@ impl FlashBangGuiApp {
                                     egui::Sense::click(),
                                 );
 
-                                // Always use RRRGGGBB value mapping as base cell background.
-                                ui.painter().rect_filled(rect, 0.0, Self::palette_color(byte));
+                                if !draw_cell_content {
+                                    text.clear();
+                                }
+
+                                // Unknown inspector cells stay visually empty; known cells keep value fill.
+                                if draw_cell_content {
+                                    if let Some(value) = byte {
+                                        ui.painter().rect_filled(rect, 0.0, Self::palette_color(value));
+                                    }
+                                }
 
                                 // Outline priority: cursor > selected range > active sector.
                                 // Keep one consistent stroke width to avoid perceived thickness jitter.
@@ -1830,10 +2095,12 @@ impl FlashBangGuiApp {
                                     ui.painter().rect_stroke(
                                         rect.shrink(0.5),
                                         0.0,
-                                        egui::Stroke::new(outline_width, egui::Color32::from_rgb(80, 20, 20)),
+                                        egui::Stroke::new(outline_width, sector_active_border),
                                     );
                                 }
-                                Self::paint_outlined_cell_text(ui, rect, &text, color, selected);
+                                if draw_cell_content {
+                                    Self::paint_outlined_cell_text(ui, rect, &text, color, selected);
+                                }
                                 if response.clicked() {
                                     let shift_pressed = ui.ctx().input(|i| i.modifiers.shift);
                                     let anchor = match pane {
@@ -1872,6 +2139,8 @@ impl FlashBangGuiApp {
                     });
             });
 
+                self.hex_scroll_y = scroll_output.state.offset.y;
+
                 ui.spacing_mut().item_spacing = old_item_spacing;
                 ui.spacing_mut().button_padding = old_button_padding;
                 ui.spacing_mut().interact_size = old_interact_size;
@@ -1880,6 +2149,8 @@ impl FlashBangGuiApp {
 
 impl eframe::App for FlashBangGuiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.ensure_solid_scrollbars(ctx);
+
         let mut do_refresh = false;
         let mut do_connect = false;
         let mut do_disconnect = false;
@@ -2097,8 +2368,8 @@ impl eframe::App for FlashBangGuiApp {
                 .show(ctx, |ui| {
                     ui.colored_label(egui::Color32::from_rgb(230, 180, 40), &dialog.message);
                     ui.add_space(8.0);
-                    if dialog.action.is_some() {
-                        if ui.button("Treiber wechseln & initialisieren").clicked() {
+                    if let Some(action) = dialog.action.as_ref() {
+                        if ui.button(Self::warning_action_label(action)).clicked() {
                             do_action = true;
                         }
                     }
@@ -2108,16 +2379,12 @@ impl eframe::App for FlashBangGuiApp {
                 });
 
             if do_action {
-                if let Some(WarningAction::SwitchDriverAndInitialize { driver_id }) = dialog.action {
-                    self.log_action(format!(
-                        "Dialog-Aktion: Treiber wechseln & initialisieren -> {}",
-                        driver_id
-                    ));
-                    if let Err(e) = self.switch_to_driver_and_initialize(&driver_id) {
-                        self.status = format!("Treiberwechsel fehlgeschlagen: {e}");
-                    }
+                // Close the current dialog first so follow-up warnings raised by the action
+                // are not immediately cleared by this dialog's close path.
+                self.warning_dialog = None;
+                if let Some(action) = dialog.action {
+                    self.execute_warning_action(action);
                 }
-                close_warn = true;
             }
 
             if close_warn {
@@ -2150,10 +2417,6 @@ impl eframe::App for FlashBangGuiApp {
 impl FlashBangGuiApp {
     fn draw_hex_dump(&mut self, ui: &mut egui::Ui) {
         self.ensure_chip_buffers();
-        if self.data.work_data.is_empty() {
-            ui.label("No chip buffer allocated yet. Connect and query chip ID first.");
-            return;
-        }
 
         ui.horizontal_wrapped(|ui| {
             ui.label("Color Mode:");
@@ -2179,6 +2442,11 @@ impl FlashBangGuiApp {
             ui.separator();
             ui.label("File:");
             ui.add(egui::TextEdit::singleline(&mut self.file_path_input).desired_width(260.0));
+            ui.separator();
+            if ui.button("New").clicked() {
+                self.log_action("Button: New Workbench");
+                self.prompt_new_workbench();
+            }
             ui.separator();
             ui.label(format!("Clipboard: {}", self.clipboard_desc));
             ui.label("Ctrl+C copies active range, Ctrl+V pastes at workspace cursor");
@@ -2803,10 +3071,9 @@ impl FlashBangGuiApp {
                                         } else {
                                             let path = PathBuf::from(self.file_path_input.trim());
                                             if !path.as_os_str().is_empty() {
-                                                if let Some(size) = self.chip_size() {
-                                                    if let Err(e) = self.save_work_range_to_file(0, size, &path) {
-                                                        self.status = e;
-                                                    }
+                                                let size = self.data.work_data.len();
+                                                if let Err(e) = self.save_work_range_to_file(0, size, &path) {
+                                                    self.status = e;
                                                 }
                                             }
                                         }
@@ -2876,6 +3143,7 @@ mod tests {
             sector_size: 4096,
         });
         app.ensure_chip_buffers();
+        app.init_workbench(512 * 1024);
         app
     }
 
