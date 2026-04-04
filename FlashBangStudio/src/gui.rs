@@ -313,6 +313,9 @@ pub struct FlashBangGuiApp {
     png_import_quantized: Vec<u8>,
     png_import_width: usize,
     png_import_height: usize,
+    png_import_zoom: usize,
+    png_import_texture: Option<egui::TextureHandle>,
+    png_import_texture_dirty: bool,
     png_import_rows_per_slice: usize,
     png_import_tile_x: usize,
     png_import_tile_y: usize,
@@ -407,6 +410,9 @@ impl FlashBangGuiApp {
             png_import_quantized: Vec::new(),
             png_import_width: 0,
             png_import_height: 0,
+            png_import_zoom: 8,
+            png_import_texture: None,
+            png_import_texture_dirty: true,
             png_import_rows_per_slice: 16,
             png_import_tile_x: 0,
             png_import_tile_y: 0,
@@ -503,6 +509,39 @@ impl FlashBangGuiApp {
 
         self.preview_texture_size = [width, height];
         self.preview_dirty = false;
+    }
+
+    fn rebuild_png_import_texture(&mut self, ctx: &egui::Context) {
+        if !self.png_import_texture_dirty {
+            return;
+        }
+
+        if self.png_import_quantized.is_empty() || self.png_import_width == 0 || self.png_import_height == 0 {
+            self.png_import_texture = None;
+            self.png_import_texture_dirty = false;
+            return;
+        }
+
+        let mut image = egui::ColorImage::new(
+            [self.png_import_width, self.png_import_height],
+            egui::Color32::BLACK,
+        );
+
+        for (idx, byte) in self.png_import_quantized.iter().enumerate() {
+            image.pixels[idx] = Self::palette_color(*byte);
+        }
+
+        if let Some(texture) = &mut self.png_import_texture {
+            texture.set(image, egui::TextureOptions::NEAREST);
+        } else {
+            self.png_import_texture = Some(ctx.load_texture(
+                "png_import_texture",
+                image,
+                egui::TextureOptions::NEAREST,
+            ));
+        }
+
+        self.png_import_texture_dirty = false;
     }
 
     fn draw_serial_monitor(&mut self, ui: &mut egui::Ui) {
@@ -1178,6 +1217,7 @@ impl FlashBangGuiApp {
         self.png_import_tile_x = 0;
         self.png_import_tile_y = 0;
         self.png_import_path = path.display().to_string();
+        self.png_import_texture_dirty = true;
         Ok(())
     }
 
@@ -1609,6 +1649,7 @@ impl FlashBangGuiApp {
 
     fn handle_workspace_typing(&mut self, ctx: &egui::Context) {
         let events = ctx.input(|i| i.events.clone());
+        let mut paste_event_seen = false;
         for event in events {
             match event {
                 egui::Event::Copy => {
@@ -1624,14 +1665,13 @@ impl FlashBangGuiApp {
                     }
                 }
                 egui::Event::Paste(text) => {
-                    if self.active_pane == Pane::Workspace {
-                        if let Some(current_addr) = self.selected_work_addr {
-                            if let Err(err) = self.paste_text_into_work(current_addr, &text) {
-                                self.status = format!("Paste failed: {err}");
-                            }
-                        } else {
-                            self.status = "Paste failed: no workspace cursor selected".to_string();
+                    paste_event_seen = true;
+                    if let Some(current_addr) = self.selected_work_addr {
+                        if let Err(err) = self.paste_text_into_work(current_addr, &text) {
+                            self.status = format!("Paste failed: {err}");
                         }
+                    } else {
+                        self.status = "Paste failed: no workspace cursor selected".to_string();
                     }
                 }
                 egui::Event::Text(text) => {
@@ -1676,6 +1716,21 @@ impl FlashBangGuiApp {
                     }
                 }
                 _ => {}
+            }
+        }
+
+        // Fallback: if Ctrl+V produced no egui paste event, use internal clipboard bytes.
+        let command_v_pressed = ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::V));
+        if command_v_pressed && !paste_event_seen {
+            if self.clipboard.is_empty() {
+                self.status = "Paste failed: clipboard is empty".to_string();
+            } else if let Some(current_addr) = self.selected_work_addr {
+                let bytes = self.clipboard.clone();
+                if let Err(err) = self.paste_bytes_into_work(current_addr, &bytes) {
+                    self.status = format!("Paste failed: {err}");
+                }
+            } else {
+                self.status = "Paste failed: no workspace cursor selected".to_string();
             }
         }
     }
@@ -3758,6 +3813,12 @@ impl eframe::App for FlashBangGuiApp {
                                 self.png_import_tile_y = 0;
                             }
                             ui.separator();
+                            ui.label("Zoom:");
+                            ui.add(
+                                egui::DragValue::new(&mut self.png_import_zoom)
+                                    .clamp_range(1..=64),
+                            );
+                            ui.separator();
                             ui.label("Tile X:");
                             ui.add(
                                 egui::DragValue::new(&mut self.png_import_tile_x)
@@ -3776,12 +3837,57 @@ impl eframe::App for FlashBangGuiApp {
                             tile_width,
                             self.png_import_rows_per_slice,
                         );
-                        let hex = Self::clipboard_hex(&slice);
+
+                        self.rebuild_png_import_texture(ctx);
+                        if let Some(texture) = &self.png_import_texture {
+                            let zoom = self.png_import_zoom.max(1) as f32;
+                            let render_size = egui::vec2(
+                                self.png_import_width as f32 * zoom,
+                                self.png_import_height as f32 * zoom,
+                            );
+
+                            ui.add_space(4.0);
+                            egui::ScrollArea::both().max_height(320.0).show(ui, |ui| {
+                                let image_response = ui.add(
+                                    egui::Image::new((texture.id(), render_size))
+                                        .sense(egui::Sense::click_and_drag()),
+                                );
+
+                                if (image_response.clicked() || image_response.dragged())
+                                    && image_response.hovered()
+                                {
+                                    if let Some(pos) = image_response.interact_pointer_pos() {
+                                        let local = pos - image_response.rect.min;
+                                        let px = (local.x / zoom).floor().max(0.0) as usize;
+                                        let py = (local.y / zoom).floor().max(0.0) as usize;
+                                        self.png_import_tile_x = (px / tile_width).min(max_tile_x);
+                                        self.png_import_tile_y = (py / self.png_import_rows_per_slice.max(1))
+                                            .min(max_tile_y);
+                                    }
+                                }
+
+                                let sx = self.png_import_tile_x * tile_width;
+                                let sy = self.png_import_tile_y * self.png_import_rows_per_slice.max(1);
+                                let ex = (sx + tile_width).min(self.png_import_width);
+                                let ey = (sy + self.png_import_rows_per_slice.max(1)).min(self.png_import_height);
+
+                                let sel_rect = egui::Rect::from_min_max(
+                                    image_response.rect.min + egui::vec2(sx as f32 * zoom, sy as f32 * zoom),
+                                    image_response.rect.min + egui::vec2(ex as f32 * zoom, ey as f32 * zoom),
+                                );
+                                ui.painter().rect_stroke(
+                                    sel_rect,
+                                    0.0,
+                                    egui::Stroke::new(2.0, egui::Color32::YELLOW),
+                                );
+                            });
+                        }
 
                         ui.add_space(6.0);
                         ui.horizontal_wrapped(|ui| {
                             if ui.button("Slice kopieren (HEX)").clicked() {
                                 self.clipboard = slice.clone();
+                                let hex = Self::clipboard_hex(&slice);
                                 self.clipboard_desc = format!(
                                     "PNG slice tx={} ty={} {}x{}",
                                     self.png_import_tile_x,
@@ -3824,15 +3930,6 @@ impl eframe::App for FlashBangGuiApp {
                                 }
                             }
                         });
-
-                        ui.separator();
-                        ui.label("Slice-HEX Vorschau (Beginn):");
-                        let preview = if hex.len() > 256 {
-                            format!("{}...", &hex[..256])
-                        } else {
-                            hex
-                        };
-                        ui.monospace(preview);
                     } else {
                         ui.separator();
                         ui.label("Noch kein PNG geladen.");
@@ -4248,15 +4345,14 @@ impl FlashBangGuiApp {
                                         "Fetch Sector (Chip+S -> Inspector+S)",
                                     ).clicked() {
                                         self.log_action(format!("Button: Fetch Sector (sector={})", self.sector_input));
-                                        match self.parse_sector_input() {
-                                            Ok((_idx, start, size)) => {
-                                                self.queue_action(
-                                                    &ctx,
-                                                    "Fetch Sector",
-                                                    DeferredAction::FetchSector { start, size },
-                                                );
-                                            }
-                                            Err(e) => self.status = format!("Invalid sector: {e}"),
+                                        if let Some((_idx, start, size)) = valid_sector {
+                                            self.queue_action(
+                                                &ctx,
+                                                "Fetch Sector",
+                                                DeferredAction::FetchSector { start, size },
+                                            );
+                                        } else {
+                                            self.status = "Invalid sector: no valid sector selected".to_string();
                                         }
                                     }
                                     if self.operation_button_enabled(
@@ -4293,15 +4389,14 @@ impl FlashBangGuiApp {
                                         "Erase Sector (Chip+S -> Trash)",
                                     ).clicked() {
                                         self.log_action(format!("Button: Erase Sector (sector={})", self.sector_input));
-                                        match self.parse_sector_input() {
-                                            Ok((_idx, start, _size)) => {
-                                                self.queue_action(
-                                                    &ctx,
-                                                    "Erase Sector",
-                                                    DeferredAction::EraseSector { start },
-                                                );
-                                            }
-                                            Err(e) => self.status = format!("Invalid sector: {e}"),
+                                        if let Some((_idx, start, _size)) = valid_sector {
+                                            self.queue_action(
+                                                &ctx,
+                                                "Erase Sector",
+                                                DeferredAction::EraseSector { start },
+                                            );
+                                        } else {
+                                            self.status = "Invalid sector: no valid sector selected".to_string();
                                         }
                                     }
                                 });
@@ -4357,13 +4452,12 @@ impl FlashBangGuiApp {
                                     "Copy Sector (Inspector+S -> Workbench+S)",
                                 ).clicked() {
                                     self.log_action(format!("Button: Copy Sector (sector={})", self.sector_input));
-                                    match self.parse_sector_input() {
-                                        Ok((_idx, start, size)) => {
-                                            if let Err(e) = self.copy_ro_into_work(start, size) {
-                                                self.status = format!("Copy sector failed: {e}");
-                                            }
+                                    if let Some((_idx, start, size)) = valid_sector {
+                                        if let Err(e) = self.copy_ro_into_work(start, size) {
+                                            self.status = format!("Copy sector failed: {e}");
                                         }
-                                        Err(e) => self.status = format!("Invalid sector: {e}"),
+                                    } else {
+                                        self.status = "Invalid sector: no valid sector selected".to_string();
                                     }
                                 }
                                 if self.operation_button_enabled(
@@ -4433,15 +4527,14 @@ impl FlashBangGuiApp {
                                     "Flash Sector (Chip+S <- Workbench+S)",
                                 ).clicked() {
                                     self.log_action(format!("Button: Flash Sector (sector={})", self.sector_input));
-                                    match self.parse_sector_input() {
-                                        Ok((_idx, start, size)) => {
-                                            self.queue_action(
-                                                &ctx,
-                                                "Flash Sector",
-                                                DeferredAction::FlashSector { start, size },
-                                            );
-                                        }
-                                        Err(e) => self.status = format!("Invalid sector: {e}"),
+                                    if let Some((_idx, start, size)) = valid_sector {
+                                        self.queue_action(
+                                            &ctx,
+                                            "Flash Sector",
+                                            DeferredAction::FlashSector { start, size },
+                                        );
+                                    } else {
+                                        self.status = "Invalid sector: no valid sector selected".to_string();
                                     }
                                 }
                                 if self.operation_button_enabled(
@@ -4601,12 +4694,11 @@ impl FlashBangGuiApp {
                                         "Save Sector (Workbench+S -> Disk+S)",
                                     ).clicked() {
                                             self.log_action(format!("Button: Save Sector (sector={})", self.sector_input));
-                                        match self.parse_sector_input() {
-                                            Ok((_idx, start, size)) => {
-                                                self.save_format_dialog =
-                                                    Some(SaveFormatDialogState::Sector { start, size });
-                                            }
-                                            Err(e) => self.status = format!("Invalid sector: {e}"),
+                                        if let Some((_idx, start, size)) = valid_sector {
+                                            self.save_format_dialog =
+                                                Some(SaveFormatDialogState::Sector { start, size });
+                                        } else {
+                                            self.status = "Invalid sector: no valid sector selected".to_string();
                                         }
                                     }
                                 });
