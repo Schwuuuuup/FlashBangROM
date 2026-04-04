@@ -288,6 +288,7 @@ pub struct FlashBangGuiApp {
     range_start_input: String,
     range_len_input: String,
     sector_input: String,
+    bytes_per_row: usize,
     file_path_input: String,
     image_save_format: ImageSaveFormat,
     sector_save_format: SectorSaveFormat,
@@ -301,6 +302,20 @@ pub struct FlashBangGuiApp {
     drag_select_anchor: Option<usize>,
     pending_hex_high_nibble: Option<u8>,
     icon_assets: Option<IconAssets>,
+    preview_window_open: bool,
+    preview_pixels_per_row: usize,
+    preview_zoom: usize,
+    preview_texture: Option<egui::TextureHandle>,
+    preview_texture_size: [usize; 2],
+    preview_dirty: bool,
+    png_import_window_open: bool,
+    png_import_path: String,
+    png_import_quantized: Vec<u8>,
+    png_import_width: usize,
+    png_import_height: usize,
+    png_import_rows_per_slice: usize,
+    png_import_tile_x: usize,
+    png_import_tile_y: usize,
     upper_area_ratio: f32,
     hex_scroll_y: f32,
     scroll_style_initialized: bool,
@@ -367,6 +382,7 @@ impl FlashBangGuiApp {
             range_start_input: "".to_string(),
             range_len_input: "".to_string(),
             sector_input: "0".to_string(),
+            bytes_per_row: 16,
             file_path_input: "captures/rom_inspector.bin".to_string(),
             image_save_format: ImageSaveFormat::Bin,
             sector_save_format: SectorSaveFormat::Sector,
@@ -380,6 +396,20 @@ impl FlashBangGuiApp {
             drag_select_anchor: None,
             pending_hex_high_nibble: None,
             icon_assets: None,
+            preview_window_open: false,
+            preview_pixels_per_row: 16,
+            preview_zoom: 12,
+            preview_texture: None,
+            preview_texture_size: [1, 1],
+            preview_dirty: true,
+            png_import_window_open: false,
+            png_import_path: String::new(),
+            png_import_quantized: Vec::new(),
+            png_import_width: 0,
+            png_import_height: 0,
+            png_import_rows_per_slice: 16,
+            png_import_tile_x: 0,
+            png_import_tile_y: 0,
             upper_area_ratio: 0.75,
             hex_scroll_y: 0.0,
             scroll_style_initialized: false,
@@ -420,6 +450,59 @@ impl FlashBangGuiApp {
                 }
             }
         }
+    }
+
+    fn rebuild_preview_texture(&mut self, ctx: &egui::Context) {
+        if !self.preview_dirty {
+            return;
+        }
+
+        const MAX_PREVIEW_TEXTURE_SIDE: usize = 16_384;
+        let data_len = self.data.work_data.len();
+        let mut width = self.preview_pixels_per_row.max(1).min(MAX_PREVIEW_TEXTURE_SIDE);
+
+        // Ensure resulting height does not exceed texture limits.
+        let min_width_for_height = data_len.max(1).div_ceil(MAX_PREVIEW_TEXTURE_SIDE);
+        width = width.max(min_width_for_height).min(MAX_PREVIEW_TEXTURE_SIDE);
+
+        // Fallback for datasets that exceed single-texture capacity.
+        let max_pixels = MAX_PREVIEW_TEXTURE_SIDE * MAX_PREVIEW_TEXTURE_SIDE;
+        let effective_len = data_len.min(max_pixels);
+        let height = effective_len.max(1).div_ceil(width);
+
+        if width != self.preview_pixels_per_row {
+            self.preview_pixels_per_row = width;
+            self.status = format!(
+                "Preview width angepasst auf {} (Texture-Limit {}x{}).",
+                width, MAX_PREVIEW_TEXTURE_SIDE, MAX_PREVIEW_TEXTURE_SIDE
+            );
+        }
+
+        if effective_len < data_len {
+            self.status = format!(
+                "Preview zeigt nur die ersten {} Byte (Texture-Limit {}x{}).",
+                effective_len, MAX_PREVIEW_TEXTURE_SIDE, MAX_PREVIEW_TEXTURE_SIDE
+            );
+        }
+
+        let mut image = egui::ColorImage::new([width, height], egui::Color32::BLACK);
+
+        for (idx, byte) in self.data.work_data.iter().take(effective_len).enumerate() {
+            image.pixels[idx] = Self::palette_color(*byte);
+        }
+
+        if let Some(texture) = &mut self.preview_texture {
+            texture.set(image, egui::TextureOptions::NEAREST);
+        } else {
+            self.preview_texture = Some(ctx.load_texture(
+                "workbench_preview",
+                image,
+                egui::TextureOptions::NEAREST,
+            ));
+        }
+
+        self.preview_texture_size = [width, height];
+        self.preview_dirty = false;
     }
 
     fn draw_serial_monitor(&mut self, ui: &mut egui::Ui) {
@@ -602,6 +685,7 @@ impl FlashBangGuiApp {
     fn init_workbench(&mut self, size: usize) {
         self.data.work_data = vec![0xFF; size];
         self.workbench_dirty = false;
+        self.preview_dirty = true;
         self.selected_work_addr = None;
         self.pending_hex_high_nibble = None;
         self.rebuild_diff_report();
@@ -957,14 +1041,6 @@ impl FlashBangGuiApp {
         }
     }
 
-    fn display_char_for_byte(byte: u8) -> char {
-        match byte {
-            0x00..=0x1F => char::from_u32(0x2400 + (byte as u32)).unwrap_or('\u{FFFD}'),
-            0x7F => '\u{2421}',
-            _ => Self::decode_latin15(byte),
-        }
-    }
-
     fn clipboard_hex(bytes: &[u8]) -> String {
         bytes
             .iter()
@@ -1021,6 +1097,7 @@ impl FlashBangGuiApp {
             }
             self.data.work_data[addr] = value;
             self.workbench_dirty = true;
+            self.preview_dirty = true;
             self.rebuild_diff_report();
         }
     }
@@ -1035,6 +1112,7 @@ impl FlashBangGuiApp {
         let end = start + bytes.len();
         self.data.work_data[start..end].copy_from_slice(bytes);
         self.workbench_dirty = true;
+        self.preview_dirty = true;
         self.rebuild_diff_report();
         self.status = format!("Pasted {} byte(s) into workspace at 0x{start:05X}", bytes.len());
         Ok(())
@@ -1053,6 +1131,107 @@ impl FlashBangGuiApp {
             return true;
         }
         false
+    }
+
+    fn choose_open_png_file(&mut self) -> bool {
+        if let Some(path) = open_file_dialog("Open PNG", &self.png_import_path, None) {
+            self.png_import_path = path;
+            return true;
+        }
+        false
+    }
+
+    fn quantize_rgb332_nearest(r: u8, g: u8, b: u8) -> u8 {
+        let mut best = 0u8;
+        let mut best_dist = u32::MAX;
+        for candidate in u8::MIN..=u8::MAX {
+            let palette = Self::palette_color(candidate);
+            let dr = i32::from(r) - i32::from(palette.r());
+            let dg = i32::from(g) - i32::from(palette.g());
+            let db = i32::from(b) - i32::from(palette.b());
+            let dist = (dr * dr + dg * dg + db * db) as u32;
+            if dist < best_dist {
+                best_dist = dist;
+                best = candidate;
+            }
+        }
+        best
+    }
+
+    fn load_png_into_import_buffer(&mut self, path: &Path) -> Result<(), String> {
+        let dyn_img = image::open(path).map_err(|e| format!("PNG konnte nicht geladen werden: {e}"))?;
+        let rgba = dyn_img.to_rgba8();
+        let width = rgba.width() as usize;
+        let height = rgba.height() as usize;
+        if width == 0 || height == 0 {
+            return Err("PNG hat ungueltige Abmessungen".to_string());
+        }
+
+        let mut out = Vec::with_capacity(width * height);
+        for px in rgba.pixels() {
+            out.push(Self::quantize_rgb332_nearest(px[0], px[1], px[2]));
+        }
+
+        self.png_import_quantized = out;
+        self.png_import_width = width;
+        self.png_import_height = height;
+        self.png_import_tile_x = 0;
+        self.png_import_tile_y = 0;
+        self.png_import_path = path.display().to_string();
+        Ok(())
+    }
+
+    fn png_tile_counts(&self, tile_width: usize, rows_per_slice: usize) -> (usize, usize) {
+        let tx = self.png_import_width.max(1).div_ceil(tile_width.max(1));
+        let ty = self.png_import_height.max(1).div_ceil(rows_per_slice.max(1));
+        (tx.max(1), ty.max(1))
+    }
+
+    fn extract_png_slice(&self, tile_x: usize, tile_y: usize, tile_width: usize, rows_per_slice: usize) -> Vec<u8> {
+        let tw = tile_width.max(1);
+        let rh = rows_per_slice.max(1);
+        let mut out = vec![0xFF; tw * rh];
+        if self.png_import_quantized.is_empty() || self.png_import_width == 0 || self.png_import_height == 0 {
+            return out;
+        }
+
+        let src_x0 = tile_x.saturating_mul(tw);
+        let src_y0 = tile_y.saturating_mul(rh);
+
+        for row in 0..rh {
+            let sy = src_y0 + row;
+            if sy >= self.png_import_height {
+                break;
+            }
+            for col in 0..tw {
+                let sx = src_x0 + col;
+                if sx >= self.png_import_width {
+                    break;
+                }
+                let src_idx = sy * self.png_import_width + sx;
+                let dst_idx = row * tw + col;
+                out[dst_idx] = self.png_import_quantized[src_idx];
+            }
+        }
+        out
+    }
+
+    fn paste_bytes_into_inspector(&mut self, start: usize, bytes: &[u8]) -> Result<(), String> {
+        if bytes.is_empty() {
+            return Err("clipboard is empty".to_string());
+        }
+        if start + bytes.len() > self.data.ro_data.len() {
+            return Err("paste exceeds inspector".to_string());
+        }
+
+        let end = start + bytes.len();
+        self.data.ro_data[start..end].copy_from_slice(bytes);
+        for known in &mut self.data.ro_known[start..end] {
+            *known = true;
+        }
+        self.rebuild_diff_report();
+        self.status = format!("Pasted {} byte(s) into inspector at 0x{start:05X}", bytes.len());
+        Ok(())
     }
 
     fn choose_save_file_with_filter(
@@ -2153,6 +2332,7 @@ impl FlashBangGuiApp {
         let copy_len = bytes.len().min(expected);
         self.data.work_data[start..start + copy_len].copy_from_slice(&bytes[..copy_len]);
         self.workbench_dirty = true;
+        self.preview_dirty = true;
         self.rebuild_diff_report();
         self.status = format!("Loaded {} byte(s) from {} into workspace", copy_len, path.display());
         Ok(())
@@ -2191,6 +2371,7 @@ impl FlashBangGuiApp {
         }
         self.data.work_data[start..start + len].copy_from_slice(&self.data.ro_data[start..start + len]);
         self.workbench_dirty = true;
+        self.preview_dirty = true;
         self.rebuild_diff_report();
         self.status = format!("Copied {len} byte(s) from Inspector into workspace at 0x{start:05X}");
         Ok(())
@@ -2567,11 +2748,85 @@ impl FlashBangGuiApp {
         Ok(())
     }
 
+    fn byte_category_color(byte: u8) -> egui::Color32 {
+        let ch = Self::decode_latin15(byte);
+
+        // Eigene Kategorie: 0xFF (mittel-dunkles Grau)
+        if byte == 0xFF {
+            return egui::Color32::from_rgb(112, 112, 112);
+        }
+
+        // Gruppe E: Whitespace (weiss/hellgrau)
+        if byte == b' ' || byte == b'\t' || byte == b'\n' || byte == b'\r' {
+            return egui::Color32::from_rgb(242, 242, 242);
+        }
+
+        // Gruppe F: sonstige Steuerzeichen (Signal-Rot)
+        if byte < 0x20 || byte == 0x7F {
+            return egui::Color32::from_rgb(220, 94, 94);
+        }
+
+        // Gruppe D: Waehrung / Typografie / Akzentzeichen
+        if matches!(
+            ch,
+            '€' | '$' | '£' | '¥' | '§' | '©' | '®' | 'ª' | 'º' | '«' | '»' | 'µ' | '±' | '×' | '÷'
+                | '´' | '^' | '¨' | '~' | '`'
+        ) {
+            return egui::Color32::from_rgb(204, 184, 116);
+        }
+
+        // Gruppe A: ASCII-Ziffern/Gross/Klein (Gruen bis Cyan)
+        if byte.is_ascii_digit() {
+            return egui::Color32::from_rgb(122, 190, 160);
+        }
+
+        if byte.is_ascii_lowercase() {
+            return egui::Color32::from_rgb(116, 182, 178);
+        }
+
+        if byte.is_ascii_uppercase() {
+            return egui::Color32::from_rgb(128, 198, 168);
+        }
+
+        // Gruppe C: Umlaute + westeuropaeische Buchstaben
+        if matches!(
+            ch,
+            'ä' | 'ö' | 'ü' | 'Ä' | 'Ö' | 'Ü' | 'ß' | 'é' | 'è' | 'ê' | 'ë' | 'à' | 'â' | 'ç'
+                | 'ñ' | 'å' | 'ø' | 'œ' | 'Œ' | 'š' | 'ž' | 'Ÿ'
+        ) {
+            return egui::Color32::from_rgb(148, 146, 214);
+        }
+
+        // Gruppe B1: einfache ASCII-Sonderzeichen
+        if matches!(
+            ch,
+            '!' | '"' | '#' | '%' | '&' | '\'' | '(' | ')' | '*' | '+' | ',' | '-' | '.' | '/'
+        ) {
+            return egui::Color32::from_rgb(198, 144, 112);
+        }
+
+        // Gruppe B2: erweiterte ASCII-Sonderzeichen
+        if matches!(
+            ch,
+            ':' | ';' | '<' | '=' | '>' | '?' | '@' | '[' | '\\' | ']' | '_' | '{' | '|' | '}'
+        ) {
+            return egui::Color32::from_rgb(190, 126, 108);
+        }
+
+        // Gruppe 6 (Fallback): Sonstiges / exotische Sonderzeichen
+        egui::Color32::from_rgb(166, 154, 184)
+    }
+
     fn byte_color_for_ro(&self, addr: usize) -> egui::Color32 {
         if self.diff_foreground_enabled {
             Self::diff_color_for_state(self.byte_state(addr))
         } else {
-            egui::Color32::from_rgb(200, 200, 200)
+            self.data
+                .ro_data
+                .get(addr)
+                .copied()
+                .map(Self::byte_category_color)
+                .unwrap_or_else(|| egui::Color32::from_rgb(178, 178, 178))
         }
     }
 
@@ -2579,7 +2834,12 @@ impl FlashBangGuiApp {
         if self.diff_foreground_enabled {
             Self::diff_color_for_state(self.byte_state(addr))
         } else {
-            egui::Color32::from_rgb(200, 200, 200)
+            self.data
+                .work_data
+                .get(addr)
+                .copied()
+                .map(Self::byte_category_color)
+                .unwrap_or_else(|| egui::Color32::from_rgb(178, 178, 178))
         }
     }
 
@@ -2624,6 +2884,70 @@ impl FlashBangGuiApp {
         );
     }
 
+    fn is_non_printable_byte(byte: u8) -> bool {
+        if byte < 0x20 || byte == 0x7F {
+            return true;
+        }
+        Self::decode_latin15(byte).is_control()
+    }
+
+    fn paint_ascii_cell_text(
+        ui: &egui::Ui,
+        rect: egui::Rect,
+        byte: u8,
+        fill_color: egui::Color32,
+        selected: bool,
+    ) {
+        let base_font = egui::TextStyle::Monospace.resolve(ui.style());
+        let ascii_font = egui::FontId::new(base_font.size * 1.5, base_font.family.clone());
+        let outline_color = if selected {
+            egui::Color32::BLACK
+        } else {
+            egui::Color32::from_rgb(20, 20, 20)
+        };
+
+        let draw_outlined = |pos: egui::Pos2, text: &str, font: &egui::FontId| {
+            let offsets = [
+                egui::vec2(-1.0, 0.0),
+                egui::vec2(1.0, 0.0),
+                egui::vec2(0.0, -1.0),
+                egui::vec2(0.0, 1.0),
+            ];
+            for offset in offsets {
+                ui.painter().text(
+                    pos + offset,
+                    egui::Align2::CENTER_CENTER,
+                    text,
+                    font.clone(),
+                    outline_color,
+                );
+            }
+            ui.painter().text(
+                pos,
+                egui::Align2::CENTER_CENTER,
+                text,
+                font.clone(),
+                fill_color,
+            );
+        };
+
+        if Self::is_non_printable_byte(byte) {
+            let hex = format!("{byte:02X}");
+            let mut chars = hex.chars();
+            let hi = chars.next().unwrap_or('0').to_string();
+            let lo = chars.next().unwrap_or('0').to_string();
+            let stacked_font = egui::FontId::new(base_font.size * 0.95, base_font.family);
+            let top = egui::pos2(rect.center().x, rect.top() + rect.height() * 0.30);
+            let bottom = egui::pos2(rect.center().x, rect.top() + rect.height() * 0.72);
+            draw_outlined(top, &hi, &stacked_font);
+            draw_outlined(bottom, &lo, &stacked_font);
+        } else {
+            let ch = Self::decode_latin15(byte);
+            let text = ch.to_string();
+            draw_outlined(rect.center(), &text, &ascii_font);
+        }
+    }
+
     fn draw_byte_grid(&mut self, ui: &mut egui::Ui, pane: Pane, id_suffix: &str) {
         let chip_size = self.visible_grid_size();
         if chip_size == 0 {
@@ -2631,8 +2955,8 @@ impl FlashBangGuiApp {
             return;
         }
 
-        const BYTES_PER_ROW: usize = 16;
-        let total_rows = chip_size.div_ceil(BYTES_PER_ROW);
+        let bytes_per_row = self.bytes_per_row.max(1);
+        let total_rows = chip_size.div_ceil(bytes_per_row);
         let sector_size = self.sector_size().unwrap_or(4096);
         let sector_label_inactive = egui::Color32::from_rgb(166, 154, 120);
         let sector_label_active_bg = egui::Color32::from_rgb(166, 154, 120);
@@ -2648,9 +2972,10 @@ impl FlashBangGuiApp {
             .ok()
             .map(|(start, len)| (start, start + len - 1));
 
-        let row_height = ui.text_style_height(&egui::TextStyle::Monospace) + 2.0;
+        let base_text_height = ui.text_style_height(&egui::TextStyle::Monospace);
+        let row_height = (base_text_height * 1.5) + 2.0;
         let hex_cell_width = 20.0;
-        let ascii_cell_width = 8.0;
+        let ascii_cell_width = 10.0;
         let old_item_spacing = ui.spacing().item_spacing;
         let old_button_padding = ui.spacing().button_padding;
         let old_interact_size = ui.spacing().interact_size;
@@ -2669,7 +2994,7 @@ impl FlashBangGuiApp {
                     .spacing(egui::vec2(0.0, 0.0))
                     .show(ui, |ui| {
                         for row in row_range {
-                            let offset = row * BYTES_PER_ROW;
+                            let offset = row * bytes_per_row;
                             if self.show_sector_boundaries && offset % sector_size == 0 {
                                 let sector_idx = offset / sector_size;
                                 let is_active_sector = active_sector_from_input == Some(sector_idx);
@@ -2704,7 +3029,7 @@ impl FlashBangGuiApp {
                                 ),
                             );
 
-                            for col in 0..BYTES_PER_ROW {
+                            for col in 0..bytes_per_row {
                                 let addr = offset + col;
 
                                 let byte = match pane {
@@ -2873,7 +3198,7 @@ impl FlashBangGuiApp {
 
                             ui.add_space(8.0);
 
-                            for col in 0..BYTES_PER_ROW {
+                            for col in 0..bytes_per_row {
                                 let addr = offset + col;
 
                                 let byte = match pane {
@@ -2905,21 +3230,10 @@ impl FlashBangGuiApp {
                                     && !self.data.ro_known.get(addr).copied().unwrap_or(false);
                                 let draw_cell_content = byte.is_some() && !unknown_inspector_cell;
 
-                                let mut text = byte
-                                    .map(Self::display_char_for_byte)
-                                    .map(|ch| ch.to_string())
-                                    .unwrap_or_default();
-                                if text.is_empty() {
-                                    text.push(' ');
-                                }
                                 let (rect, response) = ui.allocate_exact_size(
                                     egui::vec2(ascii_cell_width, row_height),
                                     egui::Sense::click_and_drag(),
                                 );
-
-                                if !draw_cell_content {
-                                    text.clear();
-                                }
 
                                 if draw_cell_content {
                                     if selected {
@@ -2931,7 +3245,9 @@ impl FlashBangGuiApp {
                                     }
                                 }
                                 if draw_cell_content {
-                                    Self::paint_outlined_cell_text(ui, rect, &text, color, selected);
+                                    if let Some(value) = byte {
+                                        Self::paint_ascii_cell_text(ui, rect, value, color, selected);
+                                    }
                                 }
                                 if self.drag_select_pane.is_none()
                                     && ui.ctx().input(|i| i.pointer.primary_pressed())
@@ -3347,6 +3663,184 @@ impl eframe::App for FlashBangGuiApp {
             }
         }
 
+        if self.preview_window_open {
+            let mut open = self.preview_window_open;
+            egui::Window::new("Workbench Preview")
+                .open(&mut open)
+                .resizable(true)
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Pixels/Row:");
+                        let pixels_resp = ui.add(
+                            egui::DragValue::new(&mut self.preview_pixels_per_row)
+                                .clamp_range(1..=4096),
+                        );
+                        ui.label("Zoom:");
+                        let zoom_resp = ui.add(
+                            egui::DragValue::new(&mut self.preview_zoom)
+                                .clamp_range(1..=32),
+                        );
+                        if pixels_resp.changed() || zoom_resp.changed() {
+                            self.preview_dirty = true;
+                        }
+                    });
+
+                    self.rebuild_preview_texture(ctx);
+
+                    if let Some(texture) = &self.preview_texture {
+                        let zoom = self.preview_zoom.max(1) as f32;
+                        let size = egui::vec2(
+                            self.preview_texture_size[0] as f32 * zoom,
+                            self.preview_texture_size[1] as f32 * zoom,
+                        );
+                        egui::ScrollArea::both().show(ui, |ui| {
+                            ui.add(egui::Image::new((texture.id(), size)));
+                        });
+                    } else {
+                        ui.label("No preview data available.");
+                    }
+                });
+            self.preview_window_open = open;
+        }
+
+        if self.png_import_window_open {
+            let mut open = self.png_import_window_open;
+            egui::Window::new("PNG Import")
+                .open(&mut open)
+                .resizable(true)
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        if ui.button("PNG laden").clicked() {
+                            if self.choose_open_png_file() {
+                                let path = PathBuf::from(self.png_import_path.trim());
+                                match self.load_png_into_import_buffer(&path) {
+                                    Ok(()) => {
+                                        self.status = format!(
+                                            "PNG geladen: {}x{} px",
+                                            self.png_import_width, self.png_import_height
+                                        );
+                                    }
+                                    Err(e) => {
+                                        self.status = e;
+                                    }
+                                }
+                            } else {
+                                self.status = "PNG-Import abgebrochen".to_string();
+                            }
+                        }
+                        if !self.png_import_path.trim().is_empty() {
+                            ui.monospace(self.png_import_path.as_str());
+                        }
+                    });
+
+                    if !self.png_import_quantized.is_empty() {
+                        let tile_width = self.bytes_per_row.max(1);
+                        let mut rows_per_slice = self.png_import_rows_per_slice.max(1);
+                        let counts = self.png_tile_counts(tile_width, rows_per_slice);
+                        let max_tile_x = counts.0.saturating_sub(1);
+                        let max_tile_y = counts.1.saturating_sub(1);
+                        self.png_import_tile_x = self.png_import_tile_x.min(max_tile_x);
+                        self.png_import_tile_y = self.png_import_tile_y.min(max_tile_y);
+
+                        ui.separator();
+                        ui.label(format!(
+                            "Quelle: {}x{} px | Slice-Breite: {} px (Cells/Row)",
+                            self.png_import_width, self.png_import_height, tile_width
+                        ));
+
+                        ui.horizontal(|ui| {
+                            ui.label("Rows pro Slice:");
+                            if ui
+                                .add(egui::DragValue::new(&mut rows_per_slice).clamp_range(1..=1024))
+                                .changed()
+                            {
+                                self.png_import_rows_per_slice = rows_per_slice;
+                                self.png_import_tile_y = 0;
+                            }
+                            ui.separator();
+                            ui.label("Tile X:");
+                            ui.add(
+                                egui::DragValue::new(&mut self.png_import_tile_x)
+                                    .clamp_range(0..=max_tile_x),
+                            );
+                            ui.label("Tile Y:");
+                            ui.add(
+                                egui::DragValue::new(&mut self.png_import_tile_y)
+                                    .clamp_range(0..=max_tile_y),
+                            );
+                        });
+
+                        let slice = self.extract_png_slice(
+                            self.png_import_tile_x,
+                            self.png_import_tile_y,
+                            tile_width,
+                            self.png_import_rows_per_slice,
+                        );
+                        let hex = Self::clipboard_hex(&slice);
+
+                        ui.add_space(6.0);
+                        ui.horizontal_wrapped(|ui| {
+                            if ui.button("Slice kopieren (HEX)").clicked() {
+                                self.clipboard = slice.clone();
+                                self.clipboard_desc = format!(
+                                    "PNG slice tx={} ty={} {}x{}",
+                                    self.png_import_tile_x,
+                                    self.png_import_tile_y,
+                                    tile_width,
+                                    self.png_import_rows_per_slice
+                                );
+                                ui.ctx().output_mut(|o| o.copied_text = hex.clone());
+                                self.copy_to_linux_primary_selection(&hex);
+                                self.status = format!("PNG-Slice kopiert: {} byte(s)", slice.len());
+                            }
+
+                            let can_paste_inspector = self
+                                .selected_ro_addr
+                                .map(|start| start + slice.len() <= self.data.ro_data.len())
+                                .unwrap_or(false);
+                            if ui
+                                .add_enabled(can_paste_inspector, egui::Button::new("In Inspector einfuegen"))
+                                .clicked()
+                            {
+                                if let Some(start) = self.selected_ro_addr {
+                                    if let Err(e) = self.paste_bytes_into_inspector(start, &slice) {
+                                        self.status = format!("Inspector-Paste fehlgeschlagen: {e}");
+                                    }
+                                }
+                            }
+
+                            let can_paste_work = self
+                                .selected_work_addr
+                                .map(|start| start + slice.len() <= self.data.work_data.len())
+                                .unwrap_or(false);
+                            if ui
+                                .add_enabled(can_paste_work, egui::Button::new("In Workbench einfuegen"))
+                                .clicked()
+                            {
+                                if let Some(start) = self.selected_work_addr {
+                                    if let Err(e) = self.paste_bytes_into_work(start, &slice) {
+                                        self.status = format!("Workbench-Paste fehlgeschlagen: {e}");
+                                    }
+                                }
+                            }
+                        });
+
+                        ui.separator();
+                        ui.label("Slice-HEX Vorschau (Beginn):");
+                        let preview = if hex.len() > 256 {
+                            format!("{}...", &hex[..256])
+                        } else {
+                            hex
+                        };
+                        ui.monospace(preview);
+                    } else {
+                        ui.separator();
+                        ui.label("Noch kein PNG geladen.");
+                    }
+                });
+            self.png_import_window_open = open;
+        }
+
         if self.pending_action.is_some() {
             if self.pending_action_armed {
                 self.pending_action_armed = false;
@@ -3408,7 +3902,16 @@ impl FlashBangGuiApp {
             ui.add(egui::TextEdit::singleline(&mut self.range_len_input).desired_width(58.0));
             ui.label("Sector:");
             ui.add(egui::TextEdit::singleline(&mut self.sector_input).desired_width(40.0));
+            ui.label("Cells/Row:");
+            let row_resp = ui.add(
+                egui::DragValue::new(&mut self.bytes_per_row).clamp_range(1..=256),
+            );
+            if row_resp.changed() {
+                self.hex_scroll_y = 0.0;
+            }
             ui.separator();
+            ui.checkbox(&mut self.preview_window_open, "Preview Window");
+            ui.checkbox(&mut self.png_import_window_open, "PNG Import");
             if ui.button("New Workbench").clicked() {
                 self.log_action("Button: New Workbench");
                 self.prompt_new_workbench();
@@ -4126,9 +4629,10 @@ mod tests {
         app.data.chip = Some(ChipId {
             manufacturer_id: 0xBF,
             device_id: 0xB7,
-            name: "SST39SF040",
+            name: "SST39SF040".to_string(),
             size_bytes: 512 * 1024,
             sector_size: 4096,
+            driver_id: "sst39-default".to_string(),
         });
         app.ensure_chip_buffers();
         app.init_workbench(512 * 1024);
