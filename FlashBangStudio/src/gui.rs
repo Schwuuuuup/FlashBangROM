@@ -301,6 +301,11 @@ enum SerialWorkerRequest {
 }
 
 enum SerialWorkerEvent {
+    Progress {
+        operation: String,
+        current: usize,
+        total: usize,
+    },
     QueryFirmwareCompleted {
         handle: Box<dyn SerialPort>,
         lines_result: Result<Vec<String>, String>,
@@ -365,6 +370,13 @@ struct WarningDialogState {
     action: Option<WarningAction>,
 }
 
+#[derive(Clone)]
+struct OperationProgress {
+    operation: String,
+    current: usize,
+    total: usize,
+}
+
 #[derive(Clone, Copy)]
 enum SaveFormatDialogState {
     Image,
@@ -395,6 +407,7 @@ pub struct FlashBangGuiApp {
     serial_worker_tx: mpsc::Sender<SerialWorkerRequest>,
     serial_worker_rx: mpsc::Receiver<SerialWorkerEvent>,
     status: String,
+    operation_progress: Option<OperationProgress>,
     diff_foreground_enabled: bool,
     palette_background_enabled: bool,
     inspector_input_mode: CharacterMode,
@@ -787,11 +800,19 @@ impl FlashBangGuiApp {
                         start,
                         len,
                     } => {
+                        let progress_tx = serial_event_tx.clone();
                         let (data, known, received, logs, error) =
                             match FlashBangGuiApp::fetch_range_on_handle(
                                 handle.as_mut(),
                                 start,
                                 len,
+                                &mut |current, total| {
+                                    let _ = progress_tx.send(SerialWorkerEvent::Progress {
+                                        operation: "Fetch".to_string(),
+                                        current,
+                                        total,
+                                    });
+                                },
                             ) {
                                 Ok((data, known, received, logs)) => {
                                     (data, known, received, logs, None)
@@ -828,6 +849,7 @@ impl FlashBangGuiApp {
                         auto_fetch,
                         sector_size,
                     } => {
+                        let progress_tx = serial_event_tx.clone();
                         let (
                             fetched_data,
                             fetched_known,
@@ -846,6 +868,13 @@ impl FlashBangGuiApp {
                             allow_flash_gray,
                             auto_fetch,
                             sector_size,
+                            &mut |current, total| {
+                                let _ = progress_tx.send(SerialWorkerEvent::Progress {
+                                    operation: "Flash".to_string(),
+                                    current,
+                                    total,
+                                });
+                            },
                         ) {
                             Ok((
                                 fetched_data,
@@ -920,6 +949,7 @@ impl FlashBangGuiApp {
             serial_worker_tx,
             serial_worker_rx: serial_event_rx,
             status: "Nicht verbunden. Verbinde ein Geraet fuer Live-Daten (Preview aktiv).".to_string(),
+            operation_progress: None,
             diff_foreground_enabled: true,
             palette_background_enabled: true,
             inspector_input_mode: CharacterMode::Hex,
@@ -1120,6 +1150,23 @@ impl FlashBangGuiApp {
                     }
                 }
             });
+        if let Some(progress) = &self.operation_progress {
+            let frac = if progress.total == 0 {
+                0.0
+            } else {
+                (progress.current as f32 / progress.total as f32).clamp(0.0, 1.0)
+            };
+            ui.separator();
+            ui.add(
+                egui::ProgressBar::new(frac)
+                    .desired_width(220.0)
+                    .show_percentage()
+                    .text(format!(
+                        "{} {}/{}",
+                        progress.operation, progress.current, progress.total
+                    )),
+            );
+        }
     }
 
     fn serial_layout_job(text: &str) -> egui::text::LayoutJob {
@@ -2526,7 +2573,24 @@ impl FlashBangGuiApp {
 
     fn drain_serial_worker_events(&mut self, ctx: &egui::Context) {
         while let Ok(event) = self.serial_worker_rx.try_recv() {
+            let is_progress_event = matches!(&event, SerialWorkerEvent::Progress { .. });
+            if !is_progress_event {
+                self.operation_progress = None;
+            }
+
             match event {
+                SerialWorkerEvent::Progress {
+                    operation,
+                    current,
+                    total,
+                } => {
+                    self.operation_progress = Some(OperationProgress {
+                        operation,
+                        current,
+                        total,
+                    });
+                    ctx.request_repaint();
+                }
                 SerialWorkerEvent::QueryFirmwareCompleted {
                     handle,
                     lines_result,
@@ -3284,6 +3348,7 @@ impl FlashBangGuiApp {
         handle: &mut dyn SerialPort,
         start: usize,
         len: usize,
+        on_progress: &mut dyn FnMut(usize, usize),
     ) -> Result<(Vec<u8>, Vec<bool>, usize, Vec<(WireDirection, String)>), (Vec<(WireDirection, String)>, String)> {
         let mut logs: Vec<(WireDirection, String)> = Vec::new();
         let max_lines = (len / 16) + 64;
@@ -3315,8 +3380,11 @@ impl FlashBangGuiApp {
                     *known_flag = true;
                 }
                 received += copy_len;
+                on_progress(received.min(len), len);
             }
         }
+
+        on_progress(received.min(len), len);
 
         Ok((out, known, received, logs))
     }
@@ -3382,6 +3450,7 @@ impl FlashBangGuiApp {
         allow_flash_gray: bool,
         auto_fetch: bool,
         sector_size: usize,
+        on_progress: &mut dyn FnMut(usize, usize),
     ) -> Result<(
         Option<Vec<u8>>,
         Option<Vec<bool>>,
@@ -3453,6 +3522,10 @@ impl FlashBangGuiApp {
         let mut programmed_unknown = 0usize;
         let mut programmed_changed = 0usize;
 
+        if len > 0 {
+            on_progress(0, len);
+        }
+
         for i in 0..len {
             let addr = start + i;
             let work = work_data[i];
@@ -3460,6 +3533,7 @@ impl FlashBangGuiApp {
             let ro = ro_data[i];
             if known && ro == work {
                 skipped_equal += 1;
+                on_progress(i + 1, len);
                 continue;
             }
 
@@ -3490,6 +3564,7 @@ impl FlashBangGuiApp {
             } else {
                 programmed_unknown += 1;
             }
+            on_progress(i + 1, len);
         }
 
         let total = len;
@@ -3499,7 +3574,7 @@ impl FlashBangGuiApp {
                 format!("Auto-Fetch: refreshing flashed range 0x{start:05X}+{len}"),
             ));
             let (data, known, received, mut fetch_logs) =
-                Self::fetch_range_on_handle(handle, start, len)
+                Self::fetch_range_on_handle(handle, start, len, &mut |_, _| {})
                     .map_err(|(l, m)| (l, format!("Auto-Fetch nach Flash fehlgeschlagen: {m}")))?;
             logs.append(&mut fetch_logs);
             logs.push((
@@ -3555,6 +3630,7 @@ impl FlashBangGuiApp {
                 handle,
                 start,
                 sector_size,
+                &mut |_, _| {},
             )
             .map_err(|(l, m)| (l, format!("Auto-Fetch nach Erase fehlgeschlagen: {m}")))?;
             logs.append(&mut fetch_logs);
@@ -3592,6 +3668,7 @@ impl FlashBangGuiApp {
                 handle,
                 0,
                 chip_size,
+                &mut |_, _| {},
             )
             .map_err(|(l, m)| (l, format!("Auto-Fetch nach Erase fehlgeschlagen: {m}")))?;
             logs.append(&mut fetch_logs);
@@ -4866,6 +4943,7 @@ impl eframe::App for FlashBangGuiApp {
             self.serial_handle = None;
             self.connected_port_name = None;
             self.connect_sequence_active = false;
+            self.operation_progress = None;
             self.status = "Serial port disconnected".to_string();
         }
 
