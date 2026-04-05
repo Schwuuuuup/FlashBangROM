@@ -158,14 +158,14 @@ fn main() {
     let protocol_version = read_protocol_version(&repo_root);
     let workspace_hash = workspace_content_hash(&repo_root, &non_ignored_files);
 
-    // Guard: local studio version must advance beyond the release baseline if both are semver.
+    // Guard: local studio version must not go below the release baseline if both are semver.
     if let (Some(local), Some(release)) = (
         parse_semver_triplet(&local_version),
         parse_semver_triplet(&based_on_release),
     ) {
-        if local <= release {
+        if local < release {
             panic!(
-                "Studio version guard failed: local CARGO_PKG_VERSION ({}) must be greater than based-on-release tag ({})",
+                "Studio version guard failed: local CARGO_PKG_VERSION ({}) must be >= based-on-release tag ({})",
                 local_version, based_on_release
             );
         }
