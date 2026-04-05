@@ -23,5 +23,24 @@ pub fn package_version() -> &'static str {
 }
 
 pub fn supported_protocol_version() -> &'static str {
-    env!("FLASHBANG_PROTOCOL_VERSION")
+    "0.5.0"
+}
+
+fn parse_semver_triplet(value: &str) -> Option<(u64, u64, u64)> {
+    let mut parts = value.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch = parts.next()?.parse().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((major, minor, patch))
+}
+
+pub fn is_protocol_compatible(remote_version: &str) -> bool {
+    let minimum = supported_protocol_version();
+    match (parse_semver_triplet(remote_version), parse_semver_triplet(minimum)) {
+        (Some(remote), Some(min)) => remote >= min,
+        _ => remote_version == minimum,
+    }
 }

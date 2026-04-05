@@ -56,6 +56,10 @@ bool parseLine(const String& line, CommandContext& ctx) {
     ctx.cmd = CommandType::Help;
     return true;
   }
+  if (normalized == "HELP") {
+    ctx.cmd = CommandType::Help;
+    return true;
+  }
   if (normalized == "HELLO" || normalized.startsWith("HELLO|")) {
     ctx.cmd = CommandType::Hello;
     return true;

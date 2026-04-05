@@ -198,6 +198,7 @@ This file is the single source of truth for long-term project direction, durable
 	- Firmware version and protocol version are intentionally decoupled: firmware bugfixes/maintenance releases may increment `F` without changing `P` if client compatibility is unchanged.
 	- Protocol version changes are milestone-driven and only required when the host/device contract changes.
 	- It is expected (but not mandatory) that protocol patch level (`Px.y.z` -> `z`) is often `0` because protocol updates are manual milestone steps, not every firmware fix.
+	- Studio keeps a compatibility floor as `Minimum protocol version` in GUI logic and accepts device protocol versions `>=` this minimum when semver-compatible.
 - GUI-/Host-Validierung muss dauerhaft mit mindestens zwei Chip-Deskriptoren in `drivers/chips/` erfolgen (SST39 + Winbond W29EE011), damit chip-spezifische Unterschiede in Größe/Adressbreite/Sequenzen ohne Firmware-Umbau testbar bleiben.
 - Terminology is now fixed project-wide for UI/Docs/Protocol labels:
 	- Chip read operations must be called `Fetch`. `Dump` is deprecated and should be replaced in UI/docs.

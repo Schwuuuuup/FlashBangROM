@@ -200,9 +200,9 @@ impl DeviceSession for MockSession {
                 capabilities,
             }) = parse_device_frame(line)
             {
-                if protocol_version != version::supported_protocol_version() {
+                if !version::is_protocol_compatible(&protocol_version) {
                     return Err(SessionError::Protocol(format!(
-                        "unsupported protocol version: got {}, expected {}",
+                        "unsupported protocol version: got {}, minimum {}",
                         protocol_version,
                         version::supported_protocol_version()
                     )));

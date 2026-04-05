@@ -1,4 +1,4 @@
-# FlashBang Link Protocol v0.5.0
+# FlashBang Link Protocol v0.5.1
 
 ## Goals
 - Keep parser deterministic and testable.
@@ -77,6 +77,7 @@ Exit:
 - `PROGRAM_STREAM_END`
 
 ## Optional Diagnostic Commands
+- `HELP` (or `?`) emits human-oriented command help as `#`-prefixed lines.
 - `DATA_BUS_MONITOR_START` starts continuous sampling of `D7..D0` and emits `STATUS|DATA_BUS|SAMPLE|0|<8-bit-binary>` frames.
 - `DATA_BUS_MONITOR_STOP` stops the continuous sampling stream.
 

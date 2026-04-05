@@ -158,15 +158,23 @@ void executeAddrBusTest(uint8_t bank) {
 void executeCommand(const CommandContext& ctx) {
   switch (ctx.cmd) {
     case CommandType::Help:
-      sendOk("HELP",
-             "HELLO|host|proto, ID, READ|addr|len, PROGRAM_BYTE|addr|value, "
-            "SECTOR_ERASE|addr, "
-            "CHIP_ERASE, WRITE_STATUS|addr|expected|timeout, "
-            "SEQUENCE|name|script, PARAMETER|key|value, "
-            "INSPECT, DRIVER_RESET, "
-            "DATA_BUS_MONITOR_START, DATA_BUS_MONITOR_STOP, "
-            "SET_A#####, "
-            "ADDR_BUS_TEST|A0_7|A8_15|A16_18");
+      Serial.println("# HELP - FlashBang Firmware Commands");
+      Serial.println("# ? | HELP                                   : show this help text");
+      Serial.println("# HELLO[|host|proto]                         : return firmware/protocol/capabilities");
+      Serial.println("# ID                                         : read chip ID using configured ID sequences");
+      Serial.println("# READ|<addr-hex>|<len-dec>                  : read bytes from chip");
+      Serial.println("# PROGRAM_BYTE|<addr-hex>|<value-hex>        : program one byte");
+      Serial.println("# SECTOR_ERASE|<addr-hex>                    : erase sector containing address");
+      Serial.println("# CHIP_ERASE                                 : erase complete chip");
+      Serial.println("# WRITE_STATUS|<addr-hex>|<exp-hex>|<ms-dec> : poll write completion status");
+      Serial.println("# SEQUENCE|<name>|<script>                   : set/replace driver sequence");
+      Serial.println("# PARAMETER|<key>|<value>                    : set built-in/custom driver parameter");
+      Serial.println("# INSPECT                                    : dump active driver config as # lines");
+      Serial.println("# DRIVER_RESET                               : restore built-in default driver");
+      Serial.println("# DATA_BUS_MONITOR_START                     : start live data bus monitor stream");
+      Serial.println("# DATA_BUS_MONITOR_STOP                      : stop live data bus monitor stream");
+      Serial.println("# SET_A<addr-hex5>                           : set monitor address (00000..7FFFF)");
+      Serial.println("# ADDR_BUS_TEST|A0_7|A8_15|A16_18            : run address bus walk test");
       break;
 
     case CommandType::Hello:

@@ -2548,14 +2548,17 @@ impl FlashBangGuiApp {
                                     capabilities,
                                 }) = parse_device_frame(&line)
                                 {
-                                    if protocol_version != version::supported_protocol_version() {
-                                        self.status = format!(
-                                            "Protokoll nicht kompatibel: erwartet {}, erhalten {}",
+                                    if !version::is_protocol_compatible(&protocol_version) {
+                                        let msg = format!(
+                                            "Protokoll nicht kompatibel: Minimum {}, erhalten {}",
                                             version::supported_protocol_version(),
                                             protocol_version
                                         );
+                                        self.warn_dialog(msg.clone());
+                                        self.status = msg;
                                         self.is_busy = false;
                                         self.busy_action = None;
+                                        self.connect_sequence_active = false;
                                         hello_info = None;
                                         break;
                                     }
@@ -4871,6 +4874,7 @@ impl eframe::App for FlashBangGuiApp {
         }
 
         if do_query_id {
+            self.connect_sequence_active = false;
             self.queue_action(ctx, "ID", DeferredAction::QueryId);
         }
 
@@ -4964,12 +4968,23 @@ impl eframe::App for FlashBangGuiApp {
         if let Some(dialog) = self.warning_dialog.clone() {
             let mut close_warn = false;
             let mut do_action = false;
+            let mut do_disconnect = false;
+            let mut do_ignore = false;
             egui::Window::new("Warnung")
                 .collapsible(false)
                 .resizable(false)
                 .show(ctx, |ui| {
                     ui.colored_label(egui::Color32::from_rgb(230, 180, 40), &dialog.message);
                     ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("DISCONNECT").clicked() {
+                            do_disconnect = true;
+                        }
+                        if ui.button("IGNORE").clicked() {
+                            do_ignore = true;
+                        }
+                    });
+                    ui.add_space(6.0);
                     if let Some(action) = dialog.action.as_ref() {
                         if ui.button(Self::warning_action_label(action)).clicked() {
                             do_action = true;
@@ -4987,6 +5002,22 @@ impl eframe::App for FlashBangGuiApp {
                 if let Some(action) = dialog.action {
                     self.execute_warning_action(action);
                 }
+            }
+
+            if do_disconnect {
+                self.warning_dialog = None;
+                self.serial_handle = None;
+                self.connected_port_name = None;
+                self.connect_sequence_active = false;
+                self.is_busy = false;
+                self.busy_action = None;
+                self.status = "Serial port disconnected".to_string();
+            }
+
+            if do_ignore {
+                self.warning_dialog = None;
+                self.status = "Warnung ignoriert".to_string();
+                self.log_action("Dialog-Aktion: IGNORE");
             }
 
             if close_warn {
