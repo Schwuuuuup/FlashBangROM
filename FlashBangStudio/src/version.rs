@@ -1,9 +1,5 @@
-pub fn version_tag() -> &'static str {
-    env!("FLASHBANG_VERSION_TAG")
-}
-
-pub fn build_number() -> &'static str {
-    env!("FLASHBANG_BUILD_NUMBER")
+pub fn based_on_release() -> &'static str {
+    env!("FLASHBANG_BASED_ON_RELEASE")
 }
 
 pub fn git_sha() -> &'static str {
@@ -16,4 +12,16 @@ pub fn is_dirty() -> bool {
 
 pub fn version_text() -> &'static str {
     env!("FLASHBANG_VERSION_TEXT")
+}
+
+pub fn build_datetime() -> &'static str {
+    env!("FLASHBANG_BUILD_DATETIME")
+}
+
+pub fn package_version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
+}
+
+pub fn supported_protocol_version() -> &'static str {
+    env!("FLASHBANG_PROTOCOL_VERSION")
 }

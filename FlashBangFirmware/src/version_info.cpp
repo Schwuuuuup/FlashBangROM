@@ -6,6 +6,10 @@ const char* firmwareVersionTag() {
   return FB_VERSION_TAG;
 }
 
+const char* firmwareProtocolVersion() {
+  return FB_PROTOCOL_VERSION;
+}
+
 const char* firmwareGitSha() {
   return FB_GIT_SHA;
 }

@@ -2,9 +2,8 @@ use crate::{
     driver_catalog,
     mock_device::MockDevice,
     protocol::{parse_device_frame, DeviceFrame},
+    version,
 };
-
-const SUPPORTED_PROTOCOL_VERSION: &str = "0.4.1";
 
 #[derive(Debug, Clone)]
 pub struct SerialPortEntry {
@@ -201,10 +200,11 @@ impl DeviceSession for MockSession {
                 capabilities,
             }) = parse_device_frame(line)
             {
-                if protocol_version != SUPPORTED_PROTOCOL_VERSION {
+                if protocol_version != version::supported_protocol_version() {
                     return Err(SessionError::Protocol(format!(
                         "unsupported protocol version: got {}, expected {}",
-                        protocol_version, SUPPORTED_PROTOCOL_VERSION
+                        protocol_version,
+                        version::supported_protocol_version()
                     )));
                 }
                 return Ok(HelloInfo {

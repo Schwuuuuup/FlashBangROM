@@ -52,7 +52,12 @@ fn main() {
         eprintln!("failed to write report: {e}");
     }
 
-    if let Ok(frame) = parse_device_frame("HELLO|flashbang-fw-dev-0.4.1|0.4.1|driver-upload") {
+    let hello_demo = format!(
+        "HELLO|flashbang-fw-dev-{}|{}|driver-upload",
+        version::supported_protocol_version(),
+        version::supported_protocol_version()
+    );
+    if let Ok(frame) = parse_device_frame(&hello_demo) {
         println!("parsed frame: {frame:?}");
     }
 }

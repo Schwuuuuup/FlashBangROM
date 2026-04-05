@@ -201,7 +201,9 @@ void setup() {
   g_state = DeviceState::Idle;
   Serial.print("HELLO|");
   Serial.print(firmwareVersionText());
-  Serial.println("|0.4.1|driver-upload");
+  Serial.print("|");
+  Serial.print(firmwareProtocolVersion());
+  Serial.println("|driver-upload");
 }
 
 void loop() {

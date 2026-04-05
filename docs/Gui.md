@@ -20,7 +20,7 @@ Diese Datei beschreibt den aktuellen Aufbau der Desktop-GUI in `FlashBangStudio`
    - Initialisiert das eframe/egui Fenster und erzeugt `FlashBangGuiApp`.
 3. `FlashBangGuiApp::update()`:
    - Zeichnet Top-Bar (P), zentralen Arbeitsbereich, globalen Splitter und Serial-Monitor (S).
-   - Verarbeitet Connect/Disconnect/Query-FW Aktionen.
+  - Verarbeitet Connect/Disconnect sowie getrennte Diagnoseaktionen (`ID`, `Upload Driver`, `Driver Abfragen`).
   - Rendert den Hex Workspace als zentrale Hauptansicht.
 4. Aktionen im Hex-Workspace triggern:
    - Protokoll-Commands ueber Serial (z. B. `READ|...`, `PROGRAM_BYTE|...`)
@@ -51,7 +51,7 @@ Diese Datei beschreibt den aktuellen Aufbau der Desktop-GUI in `FlashBangStudio`
 
 ## 2.2 UI-Struktur (Panels)
 - Datei: `FlashBangStudio/src/gui.rs`
-  - Top Bar (P): Portwahl, Connect/Disconnect, FW-Abfrage, Statusanzeige inkl. kompakter Chip-Info
+  - Top Bar (P): Portwahl, Connect/Disconnect, `ID`, `Upload Driver`, `Driver Abfragen`, Statusanzeige inkl. kompakter Chip-Info
   - Center Panel: oberer Arbeitsbereich + globaler Splitter + Serial Monitor (S)
   - Serial Monitor nutzt die verbleibende Resthoehe dynamisch
 - Renderer im oberen Arbeitsbereich:
@@ -211,11 +211,13 @@ Beispiel: Unten zusaetzlichen Operationsblock ergaenzen
 ## 2.5 Protokoll und Serial
 - Datei: `FlashBangStudio/src/gui.rs`
   - Serial low-level:
-    - `serial_send_and_read_lines()`
-    - `send_expect_ok()`
-  - Handshake/ID:
-    - `query_firmware_version()`
-    - `query_chip_id()`
+    - `serial_send_and_read_lines_on_handle()`
+    - `send_expect_ok_on_handle()`
+  - Handshake/ID/Driver ueber Worker-Aktionen:
+    - `QueryFirmware` (HELLO)
+    - `QueryId` (ID-Sequenzen + ID-Abfrage)
+    - `UploadDriver` (vollstaendiger Treiber-Upload)
+    - `QueryDriver` (INSPECT)
   - Portverwaltung:
     - `refresh_ports()`
 - Datei: `FlashBangStudio/src/protocol.rs`
@@ -318,6 +320,59 @@ Beispiel: Andere Semantik in Diff-Ansicht.
 
 ## 4.4 Beispiel C: Neues Protokollframe in GUI nutzen
 Beispiel: Firmware sendet neuen `STATUS|...`-Detailinhalt.
+
+## 5) Aktuelle Buttons Und GUI-Funktionen (Stand jetzt)
+
+Die folgende Liste beschreibt alle aktuell sichtbaren Bedienfunktionen mit genau einer Kurzzeile, wann der User sie braucht.
+
+### 5.1 Top-Bar (Verbindung/Diagnose)
+- `⟳` bei Serial Port: Portliste neu einlesen, wenn Geraet neu angesteckt wurde oder Port gewechselt hat.
+- `Connect`: Startet den kompletten Verbindungsablauf (`open -> HELLO -> ID-Check -> Driver-Upload -> optional Auto-Fetch`).
+- `Disconnect`: Trennt die aktive serielle Verbindung sauber.
+- `ID`: Fuehrt nur ID-Sequenz-Set + ID-Abfrage aus, um den Chip schnell zu identifizieren.
+- `Upload Driver`: Laedt alle Parameter/Sequenzen aus dem aktuell gewaehlten Treiber auf das Zielgeraet.
+- `Driver Abfragen`: Fuehrt `INSPECT` aus, um die aktuell am Geraet gesetzten Driver-Daten zu sehen.
+- `⟳` bei Treiberauswahl: Laedt die Treiber-YAMLs neu, wenn Dateien in `drivers/` geaendert wurden.
+- `About`: Zeigt Versions-/Build-/Git-Informationen der Anwendung.
+
+### 5.2 Arbeitsbereich (Filter/Optionen)
+- `Diff` (Toggle): Schaltet Diff-basierte Vordergrundfarben fuer Bytezellen ein/aus.
+- `Palette` (Toggle): Schaltet RGB332-Hintergrundfarben der Bytezellen ein/aus.
+- `Show Sector Boundaries` (Toggle): Zeigt Sektorgrenzen und Sektorlabels zur Orientierung im Grid.
+- `Allow Flash on gray` (Toggle): Erlaubt Flash trotz unbekannter Inspector-Zellen (grau).
+- `Auto-Fetch` (Toggle): Bestimmt, ob nach passenden Aktionen automatisch aus dem Chip nachgelesen wird.
+- `Preview Window` (Toggle): Oeffnet die Workbench-Bildvorschau fuer visuelle Byte-Musterkontrolle.
+- `PNG Import` (Toggle): Oeffnet den PNG-Importdialog fuer quantisierte Workbench-Slices.
+- `New Workbench`: Erstellt eine neue leere Workbench in gewaehlter Groesse.
+
+### 5.3 Chip-Operationsblock (links unten)
+- `Fetch Image`: Liest den kompletten Chip in den Inspector.
+- `Fetch Range`: Liest nur den angegebenen Bereich in den Inspector.
+- `Fetch Sector`: Liest nur den gewaehlten Sektor in den Inspector.
+- `Erase Image`: Loescht den kompletten Chip.
+- `Erase Sector`: Loescht nur den gewaehlten Sektor.
+
+### 5.4 Transfer-Spalte (Mitte)
+- `Copy Image`: Kopiert kompletten bekannten Inspector-Inhalt in die Workbench.
+- `Copy Range`: Kopiert den gewaehlten bekannten Bereich in die Workbench.
+- `Copy Sector`: Kopiert den gewaehlten bekannten Sektor in die Workbench.
+- `Flash Image`: Programmiert den kompletten Workbench-Inhalt in den Chip (nur wenn sinnvoll/freigegeben).
+- `Flash Range`: Programmiert nur den gewaehlten Bereich in den Chip.
+- `Flash Sector`: Programmiert nur den gewaehlten Sektor in den Chip.
+
+### 5.5 Datei-Operationsblock (rechts unten)
+- `Load Image`: Laedt ein komplettes Image von Disk in die Workbench.
+- `Load Sector`: Laedt Sektordaten von Disk in den aktuell gewaehlten Sektor der Workbench.
+- `Save Image`: Speichert die komplette Workbench auf Disk.
+- `Save Sector`: Speichert nur den aktuell gewaehlten Sektor der Workbench.
+
+### 5.6 Serial-Monitor
+- `Clear`: Leert die Log-Ansicht fuer eine neue, saubere Diagnosesession.
+- Farbcodierung RX/TX/UI: Beschleunigt Diagnose (`TX` rot, `RX` gruen, `RX #...` grau-gruen, `RX OK...` lime, `UI` blau).
+
+### 5.7 Permanente Status-Chips
+- `IMAGE`: Zeigt den Gesamtzustand Inspector vs. Workbench fuer das ganze Image (grau/orange/rot/gruen) inkl. Tooltip-Details.
+- `SECTOR`: Zeigt den Gesamtzustand fuer den aktuell gewaehlten Sektor (grau/orange/rot/gruen) inkl. Tooltip-Details.
 
 1. Parser in `protocol.rs` pruefen/erweitern (`DeviceFrame`, `parse_device_frame`).
 2. GUI-Pfad anpassen, der die Antwort konsumiert (z. B. `send_expect_ok`, `dump_range_to_ro`, FW-Abfrage).

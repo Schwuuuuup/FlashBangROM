@@ -1,3 +1,5 @@
+use crate::version;
+
 /// In-memory mock of an SST39SF040 (512 KiB, MFR=0xBF, DEV=0xB7).
 ///
 /// Responds to the FlashBang ASCII protocol commands and returns
@@ -33,7 +35,11 @@ impl MockDevice {
     pub fn handle(&self, cmd: &str) -> Vec<String> {
         let parts: Vec<&str> = cmd.trim().split_whitespace().collect();
         match parts.first().copied().unwrap_or("") {
-            "HELLO" => vec!["HELLO|flashbang-mock-0.4.1|0.4.1|driver-upload".to_string()],
+            "HELLO" => vec![format!(
+                "HELLO|flashbang-mock-{}|{}|driver-upload",
+                version::supported_protocol_version(),
+                version::supported_protocol_version()
+            )],
             "ID" => vec!["OK|ID|mf=0xBF,dev=0xB7".to_string()],
             "READ" => self.handle_read(&parts),
             "ERASE_SECTOR" => vec!["OK|ERASE_SECTOR|done".to_string()],

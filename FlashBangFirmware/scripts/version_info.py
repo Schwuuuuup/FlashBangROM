@@ -29,6 +29,7 @@ project_dir = Path(env.subst("$PROJECT_DIR"))
 repo_root = project_dir.parent
 generated_header = project_dir / "include" / "generated_build_info.h"
 version_file = project_dir / "VERSION"
+protocol_version_file = repo_root / "protocol" / "VERSION"
 
 raw_tag = run_git(repo_root, ["describe", "--tags", "--abbrev=0"])
 version_tag = sanitize_tag(raw_tag)
@@ -44,6 +45,10 @@ version_text = f"{version_tag}+build.{commit_count}.{short_sha}"
 if dirty:
     version_text += ".dirty"
 
+protocol_version = "unknown"
+if protocol_version_file.exists():
+    protocol_version = protocol_version_file.read_text(encoding="utf-8").strip() or "unknown"
+
 generated_header.write_text(
     "#pragma once\n"
     f'static constexpr const char* FB_VERSION_TAG = "{version_tag}";\n'
@@ -51,4 +56,5 @@ generated_header.write_text(
     f'static constexpr const char* FB_GIT_SHA = "{short_sha}";\n'
     f"static constexpr bool FB_GIT_DIRTY = {'true' if dirty else 'false'};\n"
     f'static constexpr const char* FB_VERSION_TEXT = "{version_text}";\n'
+    f'static constexpr const char* FB_PROTOCOL_VERSION = "{protocol_version}";\n'
 )

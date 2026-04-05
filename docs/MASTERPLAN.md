@@ -188,6 +188,16 @@ This file is the single source of truth for long-term project direction, durable
 - GUI work is allowed to progress in mock/demo mode before full hardware integration is finished.
 - Repository structure is fixed to root-level `FlashBangFirmware/` (firmware) and `FlashBangStudio/` (desktop app); an extra `host/` layer is intentionally removed.
 - Chip descriptors in `drivers/` are the canonical registry for supported IDs/capabilities, while firmware currently uses compile-time probe routines; runtime YAML parsing on MCU is not part of the current baseline.
+- Firmware may keep built-in default SST39 sequences for GUI-less / standalone operation paths.
+- Studio (`FlashBangStudio`) must not rely on firmware defaults: in GUI workflows the host is required to upload and use its selected driver parameters/sequences from `drivers/`.
+- Version governance baseline:
+	- Every committed version change of Firmware, Protocol, or Studio must be accompanied by a Git tag on that same commit.
+	- Required tag format is `F0.0.0-P0.0.0-S0.0.0` (`F`=Firmware, `P`=Protocol, `S`=Studio).
+	- The Git tag is the canonical release marker and must redundantly reflect component versions.
+	- Each component should keep its runtime/build-required local version declaration (e.g., Cargo `version`), but within a component there should be a single source of truth for its version constants used by UI/protocol checks.
+	- Firmware version and protocol version are intentionally decoupled: firmware bugfixes/maintenance releases may increment `F` without changing `P` if client compatibility is unchanged.
+	- Protocol version changes are milestone-driven and only required when the host/device contract changes.
+	- It is expected (but not mandatory) that protocol patch level (`Px.y.z` -> `z`) is often `0` because protocol updates are manual milestone steps, not every firmware fix.
 - GUI-/Host-Validierung muss dauerhaft mit mindestens zwei Chip-Deskriptoren in `drivers/chips/` erfolgen (SST39 + Winbond W29EE011), damit chip-spezifische Unterschiede in Größe/Adressbreite/Sequenzen ohne Firmware-Umbau testbar bleiben.
 - Terminology is now fixed project-wide for UI/Docs/Protocol labels:
 	- Chip read operations must be called `Fetch`. `Dump` is deprecated and should be replaced in UI/docs.
@@ -205,6 +215,10 @@ This file is the single source of truth for long-term project direction, durable
 	- Splitter scope is global across tabs, not just Hex Workspace.
 	- Default height split is 75% upper content / 25% serial monitor.
 	- Upper and lower areas must keep minimum heights to prevent layout collapse on small windows.
+- Host action execution baseline for Studio:
+	- Long-running chip I/O actions must execute off the GUI thread via worker threads and channel-based request/result messaging.
+	- GUI state mutation remains GUI-thread-only; worker threads may only return structured result payloads (patches/log/status) for application in the GUI update loop.
+	- Serial-handle ownership is transferred to worker execution during action runtime and returned via completion events; direct blocking serial loops in the GUI thread are not allowed for fetch/flash workflows.
 
 ## Operation Matrix (Canonical)
 - Icon button semantics use five 40x40 tiles per operation: `left base`, `left overlay`, `center arrow`, `right overlay`, `right base`.
