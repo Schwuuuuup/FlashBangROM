@@ -3093,7 +3093,9 @@ impl FlashBangGuiApp {
                 self.status = format!("Connected to {} @ {} baud", port.name, self.baud_rate);
                 self.connect_sequence_active = true;
                 self.pending_action = Some(DeferredAction::QueryFirmware);
-                self.busy_action = Some("HELLO".to_string());
+                self.apply_operation_event(engine::OperationEvent::Switched {
+                    label: "HELLO".to_string(),
+                });
                 Ok(())
             }
             DeferredAction::QueryFirmware => {
@@ -5207,8 +5209,7 @@ impl eframe::App for FlashBangGuiApp {
                 self.serial_handle = None;
                 self.connected_port_name = None;
                 self.connect_sequence_active = false;
-                self.is_busy = false;
-                self.busy_action = None;
+                self.apply_operation_event(engine::OperationEvent::Completed);
                 self.status = "Serial port disconnected".to_string();
             }
 
@@ -5515,8 +5516,7 @@ impl eframe::App for FlashBangGuiApp {
                     if self.connect_sequence_active {
                         self.connect_sequence_active = false;
                     }
-                    self.is_busy = false;
-                    self.busy_action = None;
+                    self.apply_operation_event(engine::OperationEvent::Completed);
                     ctx.request_repaint();
                 }
             }
