@@ -457,6 +457,19 @@ pub struct FlashBangGuiApp {
 }
 
 impl FlashBangGuiApp {
+    fn capability_snapshot(&self) -> engine::CapabilitySnapshot {
+        let upload_lines = self
+            .available_drivers
+            .get(self.selected_driver_index)
+            .and_then(|driver| driver_catalog::build_upload_plan(&driver.path).ok())
+            .map(|plan| plan.upload_lines);
+
+        engine::CapabilitySnapshot::from_sources(
+            self.data.hello.as_ref(),
+            upload_lines.as_deref(),
+        )
+    }
+
     fn parse_upload_param_hex(upload_lines: &[String], key: &str) -> Option<usize> {
         let prefix = format!("PARAMETER|{key}|");
         upload_lines
@@ -5481,6 +5494,14 @@ impl FlashBangGuiApp {
             ui.checkbox(&mut self.show_sector_boundaries, "Show Sector Boundaries");
             ui.checkbox(&mut self.allow_flash_gray, "Allow Flash on gray");
             ui.checkbox(&mut self.auto_fetch, "Auto-Fetch");
+            let capabilities = self.capability_snapshot();
+            ui.separator();
+            ui.label(format!(
+                "Cmds: proto={} driver={} custom={}",
+                capabilities.protocol_commands.len(),
+                capabilities.driver_sequences.len(),
+                capabilities.custom_driver_commands.len()
+            ));
         });
 
         ui.horizontal_wrapped(|ui| {

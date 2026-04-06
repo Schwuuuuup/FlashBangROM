@@ -1,3 +1,5 @@
+use crate::session::HelloInfo;
+
 #[derive(Clone, Debug, Default)]
 pub struct OperationStateView {
     pub is_busy: bool,
@@ -47,6 +49,67 @@ pub struct ActionAvailabilitySet {
     pub load_sector: ActionAvailability,
     pub save_image: ActionAvailability,
     pub save_sector: ActionAvailability,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct CapabilitySnapshot {
+    pub protocol_commands: Vec<String>,
+    pub driver_sequences: Vec<String>,
+    pub custom_driver_commands: Vec<String>,
+}
+
+impl CapabilitySnapshot {
+    pub fn from_sources(hello: Option<&HelloInfo>, upload_lines: Option<&[String]>) -> Self {
+        let mut protocol_commands = hello
+            .map(|h| {
+                h.capabilities
+                    .iter()
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        protocol_commands.sort();
+        protocol_commands.dedup();
+
+        let mut driver_sequences = upload_lines
+            .map(|lines| {
+                lines
+                    .iter()
+                    .filter_map(|line| line.strip_prefix("SEQUENCE|"))
+                    .filter_map(|rest| rest.split('|').next())
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        driver_sequences.sort();
+        driver_sequences.dedup();
+
+        let standard = [
+            "ID_ENTRY",
+            "ID_READ",
+            "ID_EXIT",
+            "PROGRAM_BYTE",
+            "PROGRAM_RANGE",
+            "SECTOR_ERASE",
+            "CHIP_ERASE",
+        ];
+
+        let custom_driver_commands = driver_sequences
+            .iter()
+            .filter(|name| !standard.contains(&name.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+
+        Self {
+            protocol_commands,
+            driver_sequences,
+            custom_driver_commands,
+        }
+    }
 }
 
 impl ActionAvailabilitySet {
