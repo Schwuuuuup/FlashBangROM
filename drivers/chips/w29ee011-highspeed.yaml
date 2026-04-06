@@ -1,0 +1,36 @@
+id: w29ee011-highspeed
+family: Winbond
+name: "W29EE011 Flash (Highspeed Test)"
+sector_size_bytes: 128
+address_bits: 17
+
+models:
+- jedec_id: "0xDAC1"
+  name: "W29EE011"
+  size_bytes: 131072
+
+sequences:
+  id_entry: "W5555,AA;W2AAA,55;W5555,90;D1"
+  id_read: "R0000>R0;R0001>R1"
+  id_exit: "W5555,AA;W2AAA,55;W5555,F0;D1"
+  program_byte: "W5555,AA;W2AAA,55;W5555,A0;W$A,$D;P$A,$D,20000;D0;W5555,F0;D0"
+  program_range: "W5555,AA;W2AAA,55;W5555,A0;{W$A,$D};P$A,$D,20000;D0;W5555,F0;D0"
+  sector_erase: "UNSUPPORTED"
+  chip_erase: "W5555,AA;W2AAA,55;W5555,80;W5555,AA;W2AAA,55;W5555,10;T0000,50000000"
+
+custom_params:
+- name: PAGE_SIZE_BYTES
+  default: 128
+
+operations:
+  read: true
+  program_byte: true
+  sector_erase: false
+  chip_erase: true
+  write_status: false
+  chip_id: true
+
+timing:
+  program_timeout_ms: 2
+  sector_erase_timeout_ms: 10
+  chip_erase_timeout_ms: 50
