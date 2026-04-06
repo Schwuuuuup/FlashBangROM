@@ -4244,6 +4244,7 @@ impl FlashBangGuiApp {
         &mut self,
         ui: &mut egui::Ui,
         ctx: &egui::Context,
+        operation: &engine::OperationStateView,
         key: &str,
         spec: ButtonVisualSpec,
         availability: &engine::ActionAvailability,
@@ -4251,10 +4252,6 @@ impl FlashBangGuiApp {
     ) -> egui::Response {
         match self.texture_for_visual(ctx, key, spec) {
             Ok(texture) => {
-                let operation = engine::OperationStateView {
-                    is_busy: self.is_busy,
-                    busy_action: self.busy_action.clone(),
-                };
                 let gated = engine::with_operation_gate(availability, &operation);
                 let response = Self::icon_button(ui, &texture, gated.enabled);
                 let short = Self::short_tooltip_label(tooltip);
@@ -5610,7 +5607,6 @@ impl FlashBangGuiApp {
         let valid_range = self.parse_range_input().ok();
         let valid_sector = self.parse_sector_input().ok();
         let snapshot = self.session_snapshot(valid_range, valid_sector);
-        let availability = &snapshot.availability;
         let spacing_x = ui.spacing().item_spacing.x;
         const TRANSFER_BUTTON_WIDTH: f32 = 120.0;
         const TRANSFER_COL_PADDING_X: f32 = 12.0;
@@ -5649,6 +5645,7 @@ impl FlashBangGuiApp {
                                     if self.operation_button_enabled(
                                         ui,
                                         &ctx,
+                                        &snapshot.operation,
                                         "fetch_image",
                                         ButtonVisualSpec {
                                             left_base: BaseIcon::Chip,
@@ -5657,7 +5654,7 @@ impl FlashBangGuiApp {
                                             right_overlay: None,
                                             right_base: BaseIcon::Inspector,
                                         },
-                                        &availability.fetch_image,
+                                        snapshot.availability_for(engine::ActionKey::FetchImage),
                                         "Fetch Image (Chip -> Inspector)",
                                     ).clicked() {
                                         self.log_action("Button: Fetch Image");
@@ -5666,6 +5663,7 @@ impl FlashBangGuiApp {
                                     if self.operation_button_enabled(
                                         ui,
                                         &ctx,
+                                        &snapshot.operation,
                                         "fetch_range",
                                         ButtonVisualSpec {
                                             left_base: BaseIcon::Chip,
@@ -5674,7 +5672,7 @@ impl FlashBangGuiApp {
                                             right_overlay: Some(OverlayIcon::Range),
                                             right_base: BaseIcon::Inspector,
                                         },
-                                        &availability.fetch_range,
+                                        snapshot.availability_for(engine::ActionKey::FetchRange),
                                         "Fetch Range (Chip+R -> Inspector+R)",
                                     ).clicked() {
                                         self.log_action(format!(
@@ -5695,6 +5693,7 @@ impl FlashBangGuiApp {
                                     if self.operation_button_enabled(
                                         ui,
                                         &ctx,
+                                        &snapshot.operation,
                                         "fetch_sector",
                                         ButtonVisualSpec {
                                             left_base: BaseIcon::Chip,
@@ -5703,7 +5702,7 @@ impl FlashBangGuiApp {
                                             right_overlay: Some(OverlayIcon::Sector),
                                             right_base: BaseIcon::Inspector,
                                         },
-                                        &availability.fetch_sector,
+                                        snapshot.availability_for(engine::ActionKey::FetchSector),
                                         "Fetch Sector (Chip+S -> Inspector+S)",
                                     ).clicked() {
                                         self.log_action(format!("Button: Fetch Sector (sector={})", self.sector_input));
@@ -5720,6 +5719,7 @@ impl FlashBangGuiApp {
                                     if self.operation_button_enabled(
                                         ui,
                                         &ctx,
+                                        &snapshot.operation,
                                         "erase_image",
                                         ButtonVisualSpec {
                                             left_base: BaseIcon::Chip,
@@ -5728,7 +5728,7 @@ impl FlashBangGuiApp {
                                             right_overlay: None,
                                             right_base: BaseIcon::Trash,
                                         },
-                                        &availability.erase_image,
+                                        snapshot.availability_for(engine::ActionKey::EraseImage),
                                         "Erase Image (Chip -> Trash)",
                                     ).clicked() {
                                         self.log_action("Button: Erase Image");
@@ -5737,6 +5737,7 @@ impl FlashBangGuiApp {
                                     if self.operation_button_enabled(
                                         ui,
                                         &ctx,
+                                        &snapshot.operation,
                                         "erase_sector",
                                         ButtonVisualSpec {
                                             left_base: BaseIcon::Chip,
@@ -5745,7 +5746,7 @@ impl FlashBangGuiApp {
                                             right_overlay: None,
                                             right_base: BaseIcon::Trash,
                                         },
-                                        &availability.erase_sector,
+                                        snapshot.availability_for(engine::ActionKey::EraseSector),
                                         "Erase Sector (Chip+S -> Trash)",
                                     ).clicked() {
                                         self.log_action(format!("Button: Erase Sector (sector={})", self.sector_input));
@@ -5777,6 +5778,7 @@ impl FlashBangGuiApp {
                                 if self.operation_button_enabled(
                                     ui,
                                     &ctx,
+                                    &snapshot.operation,
                                     "copy_image",
                                     ButtonVisualSpec {
                                         left_base: BaseIcon::Inspector,
@@ -5785,7 +5787,7 @@ impl FlashBangGuiApp {
                                         right_overlay: None,
                                         right_base: BaseIcon::Workbench,
                                     },
-                                    &availability.copy_image,
+                                    snapshot.availability_for(engine::ActionKey::CopyImage),
                                     "Copy Image (Inspector -> Workbench)",
                                 ).clicked() {
                                     self.log_action("Button: Copy Image");
@@ -5798,6 +5800,7 @@ impl FlashBangGuiApp {
                                 if self.operation_button_enabled(
                                     ui,
                                     &ctx,
+                                    &snapshot.operation,
                                     "copy_sector",
                                     ButtonVisualSpec {
                                         left_base: BaseIcon::Inspector,
@@ -5806,7 +5809,7 @@ impl FlashBangGuiApp {
                                         right_overlay: Some(OverlayIcon::Sector),
                                         right_base: BaseIcon::Workbench,
                                     },
-                                    &availability.copy_sector,
+                                    snapshot.availability_for(engine::ActionKey::CopySector),
                                     "Copy Sector (Inspector+S -> Workbench+S)",
                                 ).clicked() {
                                     self.log_action(format!("Button: Copy Sector (sector={})", self.sector_input));
@@ -5821,6 +5824,7 @@ impl FlashBangGuiApp {
                                 if self.operation_button_enabled(
                                     ui,
                                     &ctx,
+                                    &snapshot.operation,
                                     "copy_range",
                                     ButtonVisualSpec {
                                         left_base: BaseIcon::Inspector,
@@ -5829,7 +5833,7 @@ impl FlashBangGuiApp {
                                         right_overlay: Some(OverlayIcon::Range),
                                         right_base: BaseIcon::Workbench,
                                     },
-                                    &availability.copy_range,
+                                    snapshot.availability_for(engine::ActionKey::CopyRange),
                                     "Copy Range (Inspector+R -> Workbench+R)",
                                 ).clicked() {
                                     self.log_action(format!(
@@ -5851,6 +5855,7 @@ impl FlashBangGuiApp {
                                 if self.operation_button_enabled(
                                     ui,
                                     &ctx,
+                                    &snapshot.operation,
                                     "flash_image",
                                     ButtonVisualSpec {
                                         left_base: BaseIcon::Chip,
@@ -5859,7 +5864,7 @@ impl FlashBangGuiApp {
                                         right_overlay: None,
                                         right_base: BaseIcon::Workbench,
                                     },
-                                    &availability.flash_image,
+                                    snapshot.availability_for(engine::ActionKey::FlashImage),
                                     "Flash Image (Chip <- Workbench)",
                                 ).clicked() {
                                     self.log_action("Button: Flash Image");
@@ -5870,6 +5875,7 @@ impl FlashBangGuiApp {
                                 if self.operation_button_enabled(
                                     ui,
                                     &ctx,
+                                    &snapshot.operation,
                                     "flash_sector",
                                     ButtonVisualSpec {
                                         left_base: BaseIcon::Chip,
@@ -5878,7 +5884,7 @@ impl FlashBangGuiApp {
                                         right_overlay: Some(OverlayIcon::Sector),
                                         right_base: BaseIcon::Workbench,
                                     },
-                                    &availability.flash_sector,
+                                    snapshot.availability_for(engine::ActionKey::FlashSector),
                                     "Flash Sector (Chip+S <- Workbench+S)",
                                 ).clicked() {
                                     self.log_action(format!("Button: Flash Sector (sector={})", self.sector_input));
@@ -5895,6 +5901,7 @@ impl FlashBangGuiApp {
                                 if self.operation_button_enabled(
                                     ui,
                                     &ctx,
+                                    &snapshot.operation,
                                     "flash_range",
                                     ButtonVisualSpec {
                                         left_base: BaseIcon::Chip,
@@ -5903,7 +5910,7 @@ impl FlashBangGuiApp {
                                         right_overlay: Some(OverlayIcon::Range),
                                         right_base: BaseIcon::Workbench,
                                     },
-                                    &availability.flash_range,
+                                    snapshot.availability_for(engine::ActionKey::FlashRange),
                                     "Flash Range (Chip+R <- Workbench+R)",
                                 ).clicked() {
                                     self.log_action(format!(
@@ -5949,6 +5956,7 @@ impl FlashBangGuiApp {
                                     if self.operation_button_enabled(
                                         ui,
                                         &ctx,
+                                        &snapshot.operation,
                                         "load_image",
                                         ButtonVisualSpec {
                                             left_base: BaseIcon::Disk,
@@ -5957,7 +5965,7 @@ impl FlashBangGuiApp {
                                             right_overlay: None,
                                             right_base: BaseIcon::Workbench,
                                         },
-                                        &availability.load_image,
+                                        snapshot.availability_for(engine::ActionKey::LoadImage),
                                         "Load Image (Disk -> Workbench)",
                                     ).clicked() {
                                             self.log_action("Button: Load Image");
@@ -5972,6 +5980,7 @@ impl FlashBangGuiApp {
                                     if self.operation_button_enabled(
                                         ui,
                                         &ctx,
+                                        &snapshot.operation,
                                         "load_sector",
                                         ButtonVisualSpec {
                                             left_base: BaseIcon::Disk,
@@ -5980,7 +5989,7 @@ impl FlashBangGuiApp {
                                             right_overlay: Some(OverlayIcon::Sector),
                                             right_base: BaseIcon::Workbench,
                                         },
-                                        &availability.load_sector,
+                                        snapshot.availability_for(engine::ActionKey::LoadSector),
                                         "Load Sector (Disk+S -> Workbench+S)",
                                     ).clicked() {
                                             self.log_action(format!("Button: Load Sector (sector={})", self.sector_input));
@@ -6015,6 +6024,7 @@ impl FlashBangGuiApp {
                                     if self.operation_button_enabled(
                                         ui,
                                         &ctx,
+                                        &snapshot.operation,
                                         "save_image",
                                         ButtonVisualSpec {
                                             left_base: BaseIcon::Workbench,
@@ -6023,7 +6033,7 @@ impl FlashBangGuiApp {
                                             right_overlay: None,
                                             right_base: BaseIcon::Disk,
                                         },
-                                        &availability.save_image,
+                                        snapshot.availability_for(engine::ActionKey::SaveImage),
                                         "Save Image (Workbench -> Disk)",
                                     ).clicked() {
                                             self.log_action("Button: Save Image");
@@ -6032,6 +6042,7 @@ impl FlashBangGuiApp {
                                     if self.operation_button_enabled(
                                         ui,
                                         &ctx,
+                                        &snapshot.operation,
                                         "save_sector",
                                         ButtonVisualSpec {
                                             left_base: BaseIcon::Workbench,
@@ -6040,7 +6051,7 @@ impl FlashBangGuiApp {
                                             right_overlay: Some(OverlayIcon::Sector),
                                             right_base: BaseIcon::Disk,
                                         },
-                                        &availability.save_sector,
+                                        snapshot.availability_for(engine::ActionKey::SaveSector),
                                         "Save Sector (Workbench+S -> Disk+S)",
                                     ).clicked() {
                                             self.log_action(format!("Button: Save Sector (sector={})", self.sector_input));

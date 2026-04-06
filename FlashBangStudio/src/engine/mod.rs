@@ -51,6 +51,25 @@ pub struct ActionAvailabilitySet {
     pub save_sector: ActionAvailability,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ActionKey {
+    FetchImage,
+    FetchRange,
+    FetchSector,
+    EraseImage,
+    EraseSector,
+    CopyImage,
+    CopyRange,
+    CopySector,
+    FlashImage,
+    FlashRange,
+    FlashSector,
+    LoadImage,
+    LoadSector,
+    SaveImage,
+    SaveSector,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct CapabilitySnapshot {
     pub protocol_commands: Vec<String>,
@@ -86,6 +105,26 @@ impl SessionSnapshot {
             capabilities,
             facts: input.facts,
             availability,
+        }
+    }
+
+    pub fn availability_for(&self, key: ActionKey) -> &ActionAvailability {
+        match key {
+            ActionKey::FetchImage => &self.availability.fetch_image,
+            ActionKey::FetchRange => &self.availability.fetch_range,
+            ActionKey::FetchSector => &self.availability.fetch_sector,
+            ActionKey::EraseImage => &self.availability.erase_image,
+            ActionKey::EraseSector => &self.availability.erase_sector,
+            ActionKey::CopyImage => &self.availability.copy_image,
+            ActionKey::CopyRange => &self.availability.copy_range,
+            ActionKey::CopySector => &self.availability.copy_sector,
+            ActionKey::FlashImage => &self.availability.flash_image,
+            ActionKey::FlashRange => &self.availability.flash_range,
+            ActionKey::FlashSector => &self.availability.flash_sector,
+            ActionKey::LoadImage => &self.availability.load_image,
+            ActionKey::LoadSector => &self.availability.load_sector,
+            ActionKey::SaveImage => &self.availability.save_image,
+            ActionKey::SaveSector => &self.availability.save_sector,
         }
     }
 }
