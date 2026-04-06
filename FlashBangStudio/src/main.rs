@@ -1,4 +1,5 @@
 mod mock_device;
+mod engine;
 mod driver_catalog;
 mod protocol;
 mod report;
