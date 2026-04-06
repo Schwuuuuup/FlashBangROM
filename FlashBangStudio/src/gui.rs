@@ -400,8 +400,7 @@ pub struct FlashBangGuiApp {
     show_about: bool,
     warning_dialog: Option<WarningDialogState>,
     save_format_dialog: Option<SaveFormatDialogState>,
-    is_busy: bool,
-    busy_action: Option<String>,
+    operation_state: engine::OperationStateView,
     pending_action: Option<DeferredAction>,
     action_dispatch_tx: mpsc::Sender<ActionDispatchRequest>,
     action_dispatch_rx: mpsc::Receiver<ActionDispatchEvent>,
@@ -514,10 +513,7 @@ impl FlashBangGuiApp {
         };
 
         engine::SessionSnapshot::from_input(engine::SessionSnapshotInput {
-            operation: engine::OperationStateView {
-                is_busy: self.is_busy,
-                busy_action: self.busy_action.clone(),
-            },
+            operation: self.operation_state(),
             hello: self.data.hello.clone(),
             upload_lines,
             facts,
@@ -1009,8 +1005,7 @@ impl FlashBangGuiApp {
             show_about: false,
             warning_dialog: None,
             save_format_dialog: None,
-            is_busy: false,
-            busy_action: None,
+            operation_state: engine::OperationStateView::default(),
             pending_action: None,
             action_dispatch_tx: dispatch_tx,
             action_dispatch_rx: event_rx,
@@ -1361,7 +1356,7 @@ impl FlashBangGuiApp {
                 ));
                 if let Some(idx) = self.find_driver_index_by_id(&driver_id) {
                     self.selected_driver_index = idx;
-                    if self.serial_handle.is_some() && !self.is_busy {
+                    if self.serial_handle.is_some() && !self.operation_state.is_busy {
                         self.connect_sequence_active = true;
                         self.apply_operation_event(engine::OperationEvent::Queued {
                             label: "ID".to_string(),
@@ -2608,20 +2603,16 @@ impl FlashBangGuiApp {
     }
 
     fn operation_state(&self) -> engine::OperationStateView {
-        engine::OperationStateView {
-            is_busy: self.is_busy,
-            busy_action: self.busy_action.clone(),
-        }
+        self.operation_state.clone()
     }
 
     fn apply_operation_event(&mut self, event: engine::OperationEvent) {
         let next = engine::reduce_operation_event(&self.operation_state(), event);
-        self.is_busy = next.is_busy;
-        self.busy_action = next.busy_action;
+        self.operation_state = next;
     }
 
     fn queue_action(&mut self, ctx: &egui::Context, label: &str, action: DeferredAction) {
-        if self.is_busy {
+        if self.operation_state.is_busy {
             return;
         }
         self.apply_operation_event(engine::OperationEvent::Queued {
@@ -2732,7 +2723,7 @@ impl FlashBangGuiApp {
                                     self.apply_operation_event(engine::OperationEvent::Completed);
                                 }
                                 ctx.request_repaint();
-                            } else if self.is_busy {
+                            } else if self.operation_state.is_busy {
                                 if !self.status.starts_with("Protokoll nicht kompatibel") {
                                     self.status =
                                         "Keine HELLO-Antwort der Firmware erhalten".to_string();
@@ -4963,7 +4954,7 @@ impl eframe::App for FlashBangGuiApp {
                     status_line.push_str(" | ");
                     status_line.push_str(&chip_status);
                 }
-                if self.is_busy {
+                if self.operation_state.is_busy {
                     ui.colored_label(egui::Color32::from_rgb(255, 170, 40), status_line);
                 } else {
                     ui.label(status_line);
@@ -4971,7 +4962,7 @@ impl eframe::App for FlashBangGuiApp {
             });
 
             ui.horizontal(|ui| {
-                ui.add_enabled_ui(self.serial_handle.is_none() && !self.is_busy, |ui| {
+                ui.add_enabled_ui(self.serial_handle.is_none() && !self.operation_state.is_busy, |ui| {
                     ui.label("Serial Port:");
                     let selected_name = self
                         .available_ports
@@ -5029,23 +5020,23 @@ impl eframe::App for FlashBangGuiApp {
                 }
 
                 if self.serial_handle.is_some() {
-                    if !self.is_busy && ui.button("ID").clicked() {
+                    if !self.operation_state.is_busy && ui.button("ID").clicked() {
                         self.log_action("Button: ID");
                         do_query_id = true;
                     }
-                    if !self.is_busy && ui.button("Upload Driver").clicked() {
+                    if !self.operation_state.is_busy && ui.button("Upload Driver").clicked() {
                         self.log_action("Button: Upload Driver");
                         do_upload_driver = true;
                     }
-                    if !self.is_busy && ui.button("Driver Abfragen").clicked() {
+                    if !self.operation_state.is_busy && ui.button("Driver Abfragen").clicked() {
                         self.log_action("Button: Driver Abfragen");
                         do_query_driver = true;
                     }
-                    if !self.is_busy && ui.button("Disconnect").clicked() {
+                    if !self.operation_state.is_busy && ui.button("Disconnect").clicked() {
                         self.log_action("Button: Disconnect");
                         do_disconnect = true;
                     }
-                } else if !self.is_busy && ui.button("Connect").clicked() {
+                } else if !self.operation_state.is_busy && ui.button("Connect").clicked() {
                     self.log_action("Button: Connect");
                     do_connect = true;
                 }
@@ -5501,7 +5492,7 @@ impl eframe::App for FlashBangGuiApp {
         }
 
         if self.pending_action.is_some() {
-            if let Some(label) = self.busy_action.clone() {
+            if let Some(label) = self.operation_state.busy_action.clone() {
                 self.log_action(format!("Action execute: {label}"));
             }
             match self.execute_deferred_action() {
