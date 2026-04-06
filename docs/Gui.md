@@ -170,7 +170,7 @@ Wenn du nur das Layout anfassen willst, starte hier:
    - Kritische Aktionen (Flash/Erase) bleiben visuell klar getrennt.
 
 Beispiel: Mittlere Spalte breiter machen
-- In `draw_hex_dump()` den Wert `transfer_col_width` anheben (z. B. von `206.0` auf `240.0`).
+- In `draw_hex_dump()` den Wert `transfer_col_width` anheben (z. B. von `150.0` auf `200.0`).
 - Danach prüfen, ob linke/rechte Grid-Spalten noch genug Breite fuer 16 Bytes/Zeile haben.
 
 Beispiel: Unten zusaetzlichen Operationsblock ergaenzen
@@ -193,18 +193,21 @@ Beispiel: Unten zusaetzlichen Operationsblock ergaenzen
 - Datei: `FlashBangStudio/src/gui.rs`
   - Inspector <-> Workbench:
     - `copy_ro_into_work()`
-  - Chip -> Inspector:
-    - `dump_range_to_ro()` (Fetch)
-  - Workbench -> Chip:
-    - `flash_range_from_work()`
+  - Chip- und Transferaktionen laufen worker-basiert ueber:
+    - `SerialWorkerRequest::{FetchRange, FlashRange, EraseChip, EraseSector}`
+    - `SerialWorkerEvent::{FetchRangeCompleted, FlashRangeCompleted, EraseCompleted}`
+  - Serial-Helfer fuer I/O:
+    - `fetch_range_on_handle()`
+    - `flash_range_on_handle()`
+    - `erase_sector_on_handle()` / `erase_chip_on_handle()`
     - Schutzlogik ueber `ByteState`:
       - Gray: unbekannt/stale
       - Green: identisch
       - Orange: 1->0 programmierbar
       - Red: Erase noetig
-  - Erase:
-    - `erase_sector()`
-    - `erase_chip()`
+  - Laufender Fortschritt:
+    - Worker sendet `SerialWorkerEvent::Progress`
+    - Anzeige als ProgressBar im Log-Bereich
   - Datei-IO:
     - `load_file_into_work()`, `save_work_range_to_file()`, `sector_file_path()`
 
@@ -258,7 +261,8 @@ Beispiel: Unten zusaetzlichen Operationsblock ergaenzen
 - Datei: `FlashBangStudio/src/version.rs`
   - kapselt Zugriff auf diese Variablen
 - Datei: `FlashBangStudio/src/gui.rs`
-  - nutzt `version::version_text()` in Top-Bar/About
+  - zeigt in der Top-Bar `version::package_version()`
+  - zeigt im About-Dialog den Build-String via `version::version_text()`
 
 ## 3) Relevante Dateien fuer GUI-Aenderungen
 
@@ -321,7 +325,12 @@ Beispiel: Andere Semantik in Diff-Ansicht.
 ## 4.4 Beispiel C: Neues Protokollframe in GUI nutzen
 Beispiel: Firmware sendet neuen `STATUS|...`-Detailinhalt.
 
-## 5) Aktuelle Buttons Und GUI-Funktionen (Stand jetzt)
+1. Parser in `protocol.rs` pruefen/erweitern (`DeviceFrame`, `parse_device_frame`).
+2. GUI-Pfad anpassen, der die Antwort konsumiert (z. B. `send_expect_ok`, Worker-Event-Flow, FW-Abfrage).
+3. Status-/Log-Ausgabe in GUI ergaenzen.
+4. Parser-Tests in `protocol.rs` erweitern.
+
+## 4.5 Aktuelle Buttons Und GUI-Funktionen (Stand jetzt)
 
 Die folgende Liste beschreibt alle aktuell sichtbaren Bedienfunktionen mit genau einer Kurzzeile, wann der User sie braucht.
 
@@ -369,17 +378,13 @@ Die folgende Liste beschreibt alle aktuell sichtbaren Bedienfunktionen mit genau
 ### 5.6 Serial-Monitor
 - `Clear`: Leert die Log-Ansicht fuer eine neue, saubere Diagnosesession.
 - Farbcodierung RX/TX/UI: Beschleunigt Diagnose (`TX` rot, `RX` gruen, `RX #...` grau-gruen, `RX OK...` lime, `UI` blau).
+- `Fetch/Flash Progress`: Laufender Fortschritt wird als ProgressBar (Prozent + `current/total`) im Log-Bereich angezeigt.
 
 ### 5.7 Permanente Status-Chips
 - `IMAGE`: Zeigt den Gesamtzustand Inspector vs. Workbench fuer das ganze Image (grau/orange/rot/gruen) inkl. Tooltip-Details.
 - `SECTOR`: Zeigt den Gesamtzustand fuer den aktuell gewaehlten Sektor (grau/orange/rot/gruen) inkl. Tooltip-Details.
 
-1. Parser in `protocol.rs` pruefen/erweitern (`DeviceFrame`, `parse_device_frame`).
-2. GUI-Pfad anpassen, der die Antwort konsumiert (z. B. `send_expect_ok`, `dump_range_to_ro`, FW-Abfrage).
-3. Status-/Log-Ausgabe in GUI ergaenzen.
-4. Parser-Tests in `protocol.rs` erweitern.
-
-## 4.5 Beispiel D: Layout-Bereich erweitern
+## 4.6 Beispiel D: Layout-Bereich erweitern
 Beispiel: Neuer Statistik-Block in der Hauptansicht.
 
 1. In `FlashBangGuiApp` ggf. neuen Zustand hinzufuegen.
