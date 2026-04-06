@@ -457,17 +457,71 @@ pub struct FlashBangGuiApp {
 }
 
 impl FlashBangGuiApp {
-    fn capability_snapshot(&self) -> engine::CapabilitySnapshot {
+    fn session_snapshot(
+        &self,
+        valid_range: Option<(usize, usize)>,
+        valid_sector: Option<(usize, usize, usize)>,
+    ) -> engine::SessionSnapshot {
         let upload_lines = self
             .available_drivers
             .get(self.selected_driver_index)
             .and_then(|driver| driver_catalog::build_upload_plan(&driver.path).ok())
             .map(|plan| plan.upload_lines);
 
-        engine::CapabilitySnapshot::from_sources(
-            self.data.hello.as_ref(),
-            upload_lines.as_deref(),
-        )
+        let connected = self.serial_handle.is_some();
+        let chip_known = self.data.chip.is_some();
+        let chip_known_size = self.data.chip.as_ref().map(|c| c.size_bytes as usize);
+
+        let inspector_image_known = chip_known_size
+            .map(|size| self.is_ro_known_range(0, size))
+            .unwrap_or(false);
+        let inspector_range_known = valid_range
+            .map(|(start, len)| self.is_ro_known_range(start, len))
+            .unwrap_or(false);
+        let inspector_sector_known = valid_sector
+            .map(|(_, start, size)| self.is_ro_known_range(start, size))
+            .unwrap_or(false);
+
+        let flash_image_ready = chip_known_size
+            .map(|size| self.can_flash_range(0, size))
+            .unwrap_or(false);
+        let flash_range_ready = valid_range
+            .map(|(start, len)| self.can_flash_range(start, len))
+            .unwrap_or(false);
+        let flash_sector_ready = valid_sector
+            .map(|(_, start, size)| self.can_flash_range(start, size))
+            .unwrap_or(false);
+
+        let facts = engine::ActionFacts {
+            connected,
+            chip_known,
+            chip_size_known: chip_known_size.is_some(),
+            valid_range: valid_range.is_some(),
+            valid_sector: valid_sector.is_some(),
+            workspace_available: !self.data.work_data.is_empty(),
+            workspace_dirty: self.workbench_dirty,
+            inspector_image_known,
+            inspector_range_known,
+            inspector_sector_known,
+            flash_image_ready,
+            flash_range_ready,
+            flash_sector_ready,
+            flash_image_reason: chip_known_size.and_then(|size| self.flash_disable_reason(0, size)),
+            flash_range_reason: valid_range
+                .and_then(|(start, len)| self.flash_disable_reason(start, len)),
+            flash_sector_reason: valid_sector
+                .and_then(|(_, start, size)| self.flash_disable_reason(start, size)),
+        };
+
+        engine::SessionSnapshot::from_input(engine::SessionSnapshotInput {
+            operation: engine::OperationStateView {
+                is_busy: self.is_busy,
+                busy_action: self.busy_action.clone(),
+            },
+            hello: self.data.hello.clone(),
+            upload_lines,
+            facts,
+        })
     }
 
     fn parse_upload_param_hex(upload_lines: &[String], key: &str) -> Option<usize> {
@@ -5494,7 +5548,7 @@ impl FlashBangGuiApp {
             ui.checkbox(&mut self.show_sector_boundaries, "Show Sector Boundaries");
             ui.checkbox(&mut self.allow_flash_gray, "Allow Flash on gray");
             ui.checkbox(&mut self.auto_fetch, "Auto-Fetch");
-            let capabilities = self.capability_snapshot();
+            let capabilities = self.session_snapshot(self.parse_range_input().ok(), self.parse_sector_input().ok()).capabilities;
             ui.separator();
             ui.label(format!(
                 "Cmds: proto={} driver={} custom={}",
@@ -5553,53 +5607,10 @@ impl FlashBangGuiApp {
 
         let available_width = ui.available_width();
         let available_height = ui.available_height();
-        let connected = self.serial_handle.is_some();
-        let chip_known = self.data.chip.is_some();
-        let chip_known_size = self.data.chip.as_ref().map(|c| c.size_bytes as usize);
         let valid_range = self.parse_range_input().ok();
         let valid_sector = self.parse_sector_input().ok();
-
-        let can_copy_image = chip_known_size
-            .map(|size| self.is_ro_known_range(0, size))
-            .unwrap_or(false);
-        let can_copy_range = valid_range
-            .map(|(start, len)| self.is_ro_known_range(start, len))
-            .unwrap_or(false);
-        let can_copy_sector = valid_sector
-            .map(|(_, start, size)| self.is_ro_known_range(start, size))
-            .unwrap_or(false);
-
-        let can_flash_image = chip_known_size
-            .map(|size| self.can_flash_range(0, size))
-            .unwrap_or(false);
-        let can_flash_range = valid_range
-            .map(|(start, len)| self.can_flash_range(start, len))
-            .unwrap_or(false);
-        let can_flash_sector = valid_sector
-            .map(|(_, start, size)| self.can_flash_range(start, size))
-            .unwrap_or(false);
-
-        let facts = engine::ActionFacts {
-            connected,
-            chip_known,
-            chip_size_known: chip_known_size.is_some(),
-            valid_range: valid_range.is_some(),
-            valid_sector: valid_sector.is_some(),
-            workspace_available: !self.data.work_data.is_empty(),
-            workspace_dirty: self.workbench_dirty,
-            inspector_image_known: can_copy_image,
-            inspector_range_known: can_copy_range,
-            inspector_sector_known: can_copy_sector,
-            flash_image_ready: can_flash_image,
-            flash_range_ready: can_flash_range,
-            flash_sector_ready: can_flash_sector,
-            flash_image_reason: chip_known_size.and_then(|size| self.flash_disable_reason(0, size)),
-            flash_range_reason: valid_range
-                .and_then(|(start, len)| self.flash_disable_reason(start, len)),
-            flash_sector_reason: valid_sector
-                .and_then(|(_, start, size)| self.flash_disable_reason(start, size)),
-        };
-        let availability = engine::ActionAvailabilitySet::from_facts(&facts);
+        let snapshot = self.session_snapshot(valid_range, valid_sector);
+        let availability = &snapshot.availability;
         let spacing_x = ui.spacing().item_spacing.x;
         const TRANSFER_BUTTON_WIDTH: f32 = 120.0;
         const TRANSFER_COL_PADDING_X: f32 = 12.0;

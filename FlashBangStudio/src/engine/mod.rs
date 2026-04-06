@@ -58,6 +58,38 @@ pub struct CapabilitySnapshot {
     pub custom_driver_commands: Vec<String>,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct SessionSnapshot {
+    pub operation: OperationStateView,
+    pub capabilities: CapabilitySnapshot,
+    pub facts: ActionFacts,
+    pub availability: ActionAvailabilitySet,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct SessionSnapshotInput {
+    pub operation: OperationStateView,
+    pub hello: Option<HelloInfo>,
+    pub upload_lines: Option<Vec<String>>,
+    pub facts: ActionFacts,
+}
+
+impl SessionSnapshot {
+    pub fn from_input(input: SessionSnapshotInput) -> Self {
+        let capabilities = CapabilitySnapshot::from_sources(
+            input.hello.as_ref(),
+            input.upload_lines.as_deref(),
+        );
+        let availability = ActionAvailabilitySet::from_facts(&input.facts);
+        Self {
+            operation: input.operation,
+            capabilities,
+            facts: input.facts,
+            availability,
+        }
+    }
+}
+
 impl CapabilitySnapshot {
     pub fn from_sources(hello: Option<&HelloInfo>, upload_lines: Option<&[String]>) -> Self {
         let mut protocol_commands = hello
