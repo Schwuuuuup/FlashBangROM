@@ -1363,8 +1363,9 @@ impl FlashBangGuiApp {
                     self.selected_driver_index = idx;
                     if self.serial_handle.is_some() && !self.is_busy {
                         self.connect_sequence_active = true;
-                        self.is_busy = true;
-                        self.busy_action = Some("ID".to_string());
+                        self.apply_operation_event(engine::OperationEvent::Queued {
+                            label: "ID".to_string(),
+                        });
                         self.pending_action = Some(DeferredAction::QueryId);
                         self.status = "Wartend: ID (nach Treiberwechsel)".to_string();
                     }
@@ -2879,15 +2880,13 @@ impl FlashBangGuiApp {
 
                     if let Some(err) = error {
                         self.status = err;
-                        self.is_busy = false;
-                        self.busy_action = None;
+                        self.apply_operation_event(engine::OperationEvent::Completed);
                         ctx.request_repaint();
                         continue;
                     }
 
                     self.status = format!("Driver-Abfrage abgeschlossen: {line_count} Zeile(n)");
-                    self.is_busy = false;
-                    self.busy_action = None;
+                    self.apply_operation_event(engine::OperationEvent::Completed);
                     ctx.request_repaint();
                 }
                 SerialWorkerEvent::EraseCompleted {
@@ -2909,8 +2908,7 @@ impl FlashBangGuiApp {
 
                     if let Some(err) = error {
                         self.status = err;
-                        self.is_busy = false;
-                        self.busy_action = None;
+                        self.apply_operation_event(engine::OperationEvent::Completed);
                         ctx.request_repaint();
                         continue;
                     }
@@ -2932,8 +2930,7 @@ impl FlashBangGuiApp {
                         } else {
                             self.status =
                                 "Erase fehlgeschlagen: inkonsistente Auto-Fetch-Daten".to_string();
-                            self.is_busy = false;
-                            self.busy_action = None;
+                            self.apply_operation_event(engine::OperationEvent::Completed);
                             ctx.request_repaint();
                             continue;
                         }
@@ -2951,8 +2948,7 @@ impl FlashBangGuiApp {
                     }
 
                     self.rebuild_diff_report();
-                    self.is_busy = false;
-                    self.busy_action = None;
+                    self.apply_operation_event(engine::OperationEvent::Completed);
                     ctx.request_repaint();
                 }
                 SerialWorkerEvent::FetchRangeCompleted {
@@ -2972,8 +2968,7 @@ impl FlashBangGuiApp {
 
                     if let Some(err) = error {
                         self.status = format!("Fetch fehlgeschlagen: {err}");
-                        self.is_busy = false;
-                        self.busy_action = None;
+                        self.apply_operation_event(engine::OperationEvent::Completed);
                         if self.connect_sequence_active {
                             self.connect_sequence_active = false;
                         }
@@ -3002,8 +2997,7 @@ impl FlashBangGuiApp {
                     if self.connect_sequence_active {
                         self.connect_sequence_active = false;
                     }
-                    self.is_busy = false;
-                    self.busy_action = None;
+                    self.apply_operation_event(engine::OperationEvent::Completed);
                     ctx.request_repaint();
                 }
                 SerialWorkerEvent::FlashRangeCompleted {
@@ -3025,8 +3019,7 @@ impl FlashBangGuiApp {
 
                     if let Some(err) = error {
                         self.status = err;
-                        self.is_busy = false;
-                        self.busy_action = None;
+                        self.apply_operation_event(engine::OperationEvent::Completed);
                         ctx.request_repaint();
                         continue;
                     }
@@ -3048,8 +3041,7 @@ impl FlashBangGuiApp {
                         } else {
                             self.status =
                                 "Flash fehlgeschlagen: inkonsistente Auto-Fetch-Daten".to_string();
-                            self.is_busy = false;
-                            self.busy_action = None;
+                            self.apply_operation_event(engine::OperationEvent::Completed);
                             ctx.request_repaint();
                             continue;
                         }
@@ -3067,8 +3059,7 @@ impl FlashBangGuiApp {
                     }
 
                     self.rebuild_diff_report();
-                    self.is_busy = false;
-                    self.busy_action = None;
+                    self.apply_operation_event(engine::OperationEvent::Completed);
                     ctx.request_repaint();
                 }
             }
