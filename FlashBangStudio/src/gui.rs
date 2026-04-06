@@ -2606,20 +2606,33 @@ impl FlashBangGuiApp {
         });
     }
 
+    fn operation_state(&self) -> engine::OperationStateView {
+        engine::OperationStateView {
+            is_busy: self.is_busy,
+            busy_action: self.busy_action.clone(),
+        }
+    }
+
+    fn apply_operation_event(&mut self, event: engine::OperationEvent) {
+        let next = engine::reduce_operation_event(&self.operation_state(), event);
+        self.is_busy = next.is_busy;
+        self.busy_action = next.busy_action;
+    }
+
     fn queue_action(&mut self, ctx: &egui::Context, label: &str, action: DeferredAction) {
         if self.is_busy {
             return;
         }
-        self.is_busy = true;
-        self.busy_action = Some(label.to_string());
+        self.apply_operation_event(engine::OperationEvent::Queued {
+            label: label.to_string(),
+        });
         self.status = format!("Wartend: {label}");
         self.log_action(format!("Action queued: {label}"));
         if let Err(e) = self.action_dispatch_tx.send(ActionDispatchRequest::Enqueue {
             label: label.to_string(),
             action,
         }) {
-            self.is_busy = false;
-            self.busy_action = None;
+            self.apply_operation_event(engine::OperationEvent::Completed);
             self.status = format!("Action queue failed: {e}");
             self.log_action(format!("Action queue failed: {e}"));
         }
@@ -2631,6 +2644,9 @@ impl FlashBangGuiApp {
             match event {
                 ActionDispatchEvent::Ready { label, action } => {
                     self.log_action(format!("Action dispatch ready: {label}"));
+                    self.apply_operation_event(engine::OperationEvent::Switched {
+                        label: label.clone(),
+                    });
                     self.status = format!("Laufend: {label}");
                     self.pending_action = Some(action);
                     ctx.request_repaint();
@@ -2688,8 +2704,7 @@ impl FlashBangGuiApp {
                                         );
                                         self.warn_dialog(msg.clone());
                                         self.status = msg;
-                                        self.is_busy = false;
-                                        self.busy_action = None;
+                                        self.apply_operation_event(engine::OperationEvent::Completed);
                                         self.connect_sequence_active = false;
                                         hello_info = None;
                                         break;
@@ -2708,27 +2723,26 @@ impl FlashBangGuiApp {
                                 self.data.hello = Some(info);
                                 self.status = format!("Firmware erkannt: {fw}");
                                 if self.connect_sequence_active {
-                                    self.busy_action = Some("ID".to_string());
+                                    self.apply_operation_event(engine::OperationEvent::Switched {
+                                        label: "ID".to_string(),
+                                    });
                                     self.pending_action = Some(DeferredAction::QueryId);
                                 } else {
-                                    self.is_busy = false;
-                                    self.busy_action = None;
+                                    self.apply_operation_event(engine::OperationEvent::Completed);
                                 }
                                 ctx.request_repaint();
                             } else if self.is_busy {
                                 if !self.status.starts_with("Protokoll nicht kompatibel") {
                                     self.status =
                                         "Keine HELLO-Antwort der Firmware erhalten".to_string();
-                                    self.is_busy = false;
-                                    self.busy_action = None;
+                                    self.apply_operation_event(engine::OperationEvent::Completed);
                                     self.connect_sequence_active = false;
                                 }
                             }
                         }
                         Err(e) => {
                             self.status = format!("FW-Abfrage fehlgeschlagen: {e}");
-                            self.is_busy = false;
-                            self.busy_action = None;
+                            self.apply_operation_event(engine::OperationEvent::Completed);
                             self.connect_sequence_active = false;
                         }
                     }
@@ -2749,8 +2763,7 @@ impl FlashBangGuiApp {
                     if let Some(err) = error {
                         self.data.chip = None;
                         self.status = err;
-                        self.is_busy = false;
-                        self.busy_action = None;
+                        self.apply_operation_event(engine::OperationEvent::Completed);
                         self.connect_sequence_active = false;
                         ctx.request_repaint();
                         continue;
@@ -2772,8 +2785,7 @@ impl FlashBangGuiApp {
 
                         let Some(chip) = self.data.chip.clone() else {
                             self.status = "Connect abgebrochen: ID konnte keinem Chip zugeordnet werden".to_string();
-                            self.is_busy = false;
-                            self.busy_action = None;
+                            self.apply_operation_event(engine::OperationEvent::Completed);
                             self.connect_sequence_active = false;
                             ctx.request_repaint();
                             continue;
@@ -2794,18 +2806,18 @@ impl FlashBangGuiApp {
                             );
                             self.warn_dialog_with_action(warn.clone(), action);
                             self.status = warn;
-                            self.is_busy = false;
-                            self.busy_action = None;
+                            self.apply_operation_event(engine::OperationEvent::Completed);
                             self.connect_sequence_active = false;
                             ctx.request_repaint();
                             continue;
                         }
 
-                        self.busy_action = Some("Upload Driver".to_string());
+                        self.apply_operation_event(engine::OperationEvent::Switched {
+                            label: "Upload Driver".to_string(),
+                        });
                         self.pending_action = Some(DeferredAction::UploadDriver);
                     } else {
-                        self.is_busy = false;
-                        self.busy_action = None;
+                        self.apply_operation_event(engine::OperationEvent::Completed);
                     }
                     ctx.request_repaint();
                 }
@@ -2822,8 +2834,7 @@ impl FlashBangGuiApp {
 
                     if let Some(err) = error {
                         self.status = err;
-                        self.is_busy = false;
-                        self.busy_action = None;
+                        self.apply_operation_event(engine::OperationEvent::Completed);
                         self.connect_sequence_active = false;
                         ctx.request_repaint();
                         continue;
@@ -2838,21 +2849,20 @@ impl FlashBangGuiApp {
                             self.check_or_init_workbench_for_fetch_image(chip_size);
                             self.reset_inspector_buffers();
                             if self.auto_fetch {
-                                self.busy_action = Some("Fetch Image".to_string());
+                                self.apply_operation_event(engine::OperationEvent::Switched {
+                                    label: "Fetch Image".to_string(),
+                                });
                                 self.pending_action = Some(DeferredAction::FetchImage);
                             } else {
                                 self.connect_sequence_active = false;
-                                self.is_busy = false;
-                                self.busy_action = None;
+                                self.apply_operation_event(engine::OperationEvent::Completed);
                             }
                         } else {
                             self.connect_sequence_active = false;
-                            self.is_busy = false;
-                            self.busy_action = None;
+                            self.apply_operation_event(engine::OperationEvent::Completed);
                         }
                     } else {
-                        self.is_busy = false;
-                        self.busy_action = None;
+                        self.apply_operation_event(engine::OperationEvent::Completed);
                     }
                     ctx.request_repaint();
                 }

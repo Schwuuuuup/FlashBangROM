@@ -6,6 +6,33 @@ pub struct OperationStateView {
     pub busy_action: Option<String>,
 }
 
+#[derive(Clone, Debug)]
+pub enum OperationEvent {
+    Queued { label: String },
+    Switched { label: String },
+    Completed,
+}
+
+pub fn reduce_operation_event(
+    _current: &OperationStateView,
+    event: OperationEvent,
+) -> OperationStateView {
+    match event {
+        OperationEvent::Queued { label } => OperationStateView {
+            is_busy: true,
+            busy_action: Some(label),
+        },
+        OperationEvent::Switched { label } => OperationStateView {
+            is_busy: true,
+            busy_action: Some(label),
+        },
+        OperationEvent::Completed => OperationStateView {
+            is_busy: false,
+            busy_action: None,
+        },
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct ActionAvailability {
     pub enabled: bool,
