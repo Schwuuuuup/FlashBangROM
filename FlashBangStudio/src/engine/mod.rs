@@ -150,6 +150,46 @@ pub fn reduce_connect_flow(
 }
 
 #[derive(Clone, Debug, Default)]
+pub struct RuntimeState {
+    pub operation: OperationStateView,
+    pub connect_flow: ConnectFlowState,
+}
+
+#[derive(Clone, Debug)]
+pub enum RuntimeEvent {
+    Operation(OperationEvent),
+    ConnectFlow(ConnectFlowEvent),
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct RuntimeUpdate {
+    pub state: RuntimeState,
+    pub next_connect_step: Option<ConnectFlowStep>,
+}
+
+pub fn reduce_runtime_event(current: &RuntimeState, event: RuntimeEvent) -> RuntimeUpdate {
+    match event {
+        RuntimeEvent::Operation(op_event) => RuntimeUpdate {
+            state: RuntimeState {
+                operation: reduce_operation_event(&current.operation, op_event),
+                connect_flow: current.connect_flow,
+            },
+            next_connect_step: None,
+        },
+        RuntimeEvent::ConnectFlow(flow_event) => {
+            let (connect_flow, next_connect_step) = reduce_connect_flow(current.connect_flow, flow_event);
+            RuntimeUpdate {
+                state: RuntimeState {
+                    operation: current.operation.clone(),
+                    connect_flow,
+                },
+                next_connect_step,
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
 pub struct CapabilitySnapshot {
     pub protocol_commands: Vec<String>,
     pub driver_sequences: Vec<String>,
