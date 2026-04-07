@@ -155,6 +155,20 @@ pub struct RuntimeState {
     pub connect_flow: ConnectFlowState,
 }
 
+impl RuntimeState {
+    pub fn is_busy(&self) -> bool {
+        self.operation.is_busy
+    }
+
+    pub fn busy_label(&self) -> Option<&str> {
+        self.operation.busy_action.as_deref()
+    }
+
+    pub fn connect_active(&self) -> bool {
+        self.connect_flow == ConnectFlowState::Active
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum RuntimeEvent {
     Operation(OperationEvent),
