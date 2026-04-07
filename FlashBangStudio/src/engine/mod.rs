@@ -97,6 +97,58 @@ pub enum ActionKey {
     SaveSector,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ConnectFlowState {
+    #[default]
+    Inactive,
+    Active,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConnectFlowStep {
+    QueryFirmware,
+    QueryId,
+    UploadDriver,
+    FetchImage,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConnectFlowEvent {
+    Start,
+    FirmwareOk,
+    IdOk,
+    UploadDriverOk { auto_fetch: bool },
+    FetchDone,
+    Abort,
+}
+
+pub fn reduce_connect_flow(
+    state: ConnectFlowState,
+    event: ConnectFlowEvent,
+) -> (ConnectFlowState, Option<ConnectFlowStep>) {
+    match event {
+        ConnectFlowEvent::Start => (ConnectFlowState::Active, Some(ConnectFlowStep::QueryFirmware)),
+        ConnectFlowEvent::FirmwareOk if state == ConnectFlowState::Active => {
+            (ConnectFlowState::Active, Some(ConnectFlowStep::QueryId))
+        }
+        ConnectFlowEvent::IdOk if state == ConnectFlowState::Active => {
+            (ConnectFlowState::Active, Some(ConnectFlowStep::UploadDriver))
+        }
+        ConnectFlowEvent::UploadDriverOk { auto_fetch } if state == ConnectFlowState::Active => {
+            if auto_fetch {
+                (ConnectFlowState::Active, Some(ConnectFlowStep::FetchImage))
+            } else {
+                (ConnectFlowState::Inactive, None)
+            }
+        }
+        ConnectFlowEvent::FetchDone if state == ConnectFlowState::Active => {
+            (ConnectFlowState::Inactive, None)
+        }
+        ConnectFlowEvent::Abort => (ConnectFlowState::Inactive, None),
+        _ => (state, None),
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct CapabilitySnapshot {
     pub protocol_commands: Vec<String>,

@@ -415,7 +415,7 @@ pub struct FlashBangGuiApp {
     show_sector_boundaries: bool,
     allow_flash_gray: bool,
     auto_fetch: bool,
-    connect_sequence_active: bool,
+    connect_flow_state: engine::ConnectFlowState,
     range_start_input: String,
     range_len_input: String,
     sector_input: String,
@@ -1020,7 +1020,7 @@ impl FlashBangGuiApp {
             show_sector_boundaries: true,
             allow_flash_gray: false,
             auto_fetch: true,
-            connect_sequence_active: false,
+            connect_flow_state: engine::ConnectFlowState::Inactive,
             range_start_input: "".to_string(),
             range_len_input: "".to_string(),
             sector_input: "0".to_string(),
@@ -1357,11 +1357,11 @@ impl FlashBangGuiApp {
                 if let Some(idx) = self.find_driver_index_by_id(&driver_id) {
                     self.selected_driver_index = idx;
                     if self.serial_handle.is_some() && !self.operation_state.is_busy {
-                        self.connect_sequence_active = true;
+                        self.connect_flow_state = engine::ConnectFlowState::Active;
+                        self.apply_connect_flow_event(engine::ConnectFlowEvent::FirmwareOk);
                         self.apply_operation_event(engine::OperationEvent::Queued {
                             label: "ID".to_string(),
                         });
-                        self.pending_action = Some(DeferredAction::QueryId);
                         self.status = "Wartend: ID (nach Treiberwechsel)".to_string();
                     }
                 } else {
@@ -2611,6 +2611,27 @@ impl FlashBangGuiApp {
         self.operation_state = next;
     }
 
+    fn connect_flow_is_active(&self) -> bool {
+        self.connect_flow_state == engine::ConnectFlowState::Active
+    }
+
+    fn deferred_action_for_connect_step(step: engine::ConnectFlowStep) -> DeferredAction {
+        match step {
+            engine::ConnectFlowStep::QueryFirmware => DeferredAction::QueryFirmware,
+            engine::ConnectFlowStep::QueryId => DeferredAction::QueryId,
+            engine::ConnectFlowStep::UploadDriver => DeferredAction::UploadDriver,
+            engine::ConnectFlowStep::FetchImage => DeferredAction::FetchImage,
+        }
+    }
+
+    fn apply_connect_flow_event(&mut self, event: engine::ConnectFlowEvent) {
+        let (state, step) = engine::reduce_connect_flow(self.connect_flow_state, event);
+        self.connect_flow_state = state;
+        if let Some(step) = step {
+            self.pending_action = Some(Self::deferred_action_for_connect_step(step));
+        }
+    }
+
     fn queue_action(&mut self, ctx: &egui::Context, label: &str, action: DeferredAction) {
         if self.operation_state.is_busy {
             return;
@@ -2697,7 +2718,7 @@ impl FlashBangGuiApp {
                                         self.warn_dialog(msg.clone());
                                         self.status = msg;
                                         self.apply_operation_event(engine::OperationEvent::Completed);
-                                        self.connect_sequence_active = false;
+                                        self.apply_connect_flow_event(engine::ConnectFlowEvent::Abort);
                                         hello_info = None;
                                         break;
                                     }
@@ -2714,11 +2735,11 @@ impl FlashBangGuiApp {
                                 let fw = info.fw_version.clone();
                                 self.data.hello = Some(info);
                                 self.status = format!("Firmware erkannt: {fw}");
-                                if self.connect_sequence_active {
+                                if self.connect_flow_is_active() {
+                                    self.apply_connect_flow_event(engine::ConnectFlowEvent::FirmwareOk);
                                     self.apply_operation_event(engine::OperationEvent::Switched {
                                         label: "ID".to_string(),
                                     });
-                                    self.pending_action = Some(DeferredAction::QueryId);
                                 } else {
                                     self.apply_operation_event(engine::OperationEvent::Completed);
                                 }
@@ -2728,14 +2749,14 @@ impl FlashBangGuiApp {
                                     self.status =
                                         "Keine HELLO-Antwort der Firmware erhalten".to_string();
                                     self.apply_operation_event(engine::OperationEvent::Completed);
-                                    self.connect_sequence_active = false;
+                                    self.apply_connect_flow_event(engine::ConnectFlowEvent::Abort);
                                 }
                             }
                         }
                         Err(e) => {
                             self.status = format!("FW-Abfrage fehlgeschlagen: {e}");
                             self.apply_operation_event(engine::OperationEvent::Completed);
-                            self.connect_sequence_active = false;
+                            self.apply_connect_flow_event(engine::ConnectFlowEvent::Abort);
                         }
                     }
 
@@ -2756,7 +2777,7 @@ impl FlashBangGuiApp {
                         self.data.chip = None;
                         self.status = err;
                         self.apply_operation_event(engine::OperationEvent::Completed);
-                        self.connect_sequence_active = false;
+                        self.apply_connect_flow_event(engine::ConnectFlowEvent::Abort);
                         ctx.request_repaint();
                         continue;
                     }
@@ -2766,10 +2787,10 @@ impl FlashBangGuiApp {
                     } else {
                         self.data.chip = None;
                         self.status = "Keine verwertbare ID-Antwort erhalten".to_string();
-                        self.connect_sequence_active = false;
+                        self.apply_connect_flow_event(engine::ConnectFlowEvent::Abort);
                     }
 
-                    if self.connect_sequence_active {
+                    if self.connect_flow_is_active() {
                         let selected_driver_id = self
                             .available_drivers
                             .get(self.selected_driver_index)
@@ -2778,7 +2799,7 @@ impl FlashBangGuiApp {
                         let Some(chip) = self.data.chip.clone() else {
                             self.status = "Connect abgebrochen: ID konnte keinem Chip zugeordnet werden".to_string();
                             self.apply_operation_event(engine::OperationEvent::Completed);
-                            self.connect_sequence_active = false;
+                            self.apply_connect_flow_event(engine::ConnectFlowEvent::Abort);
                             ctx.request_repaint();
                             continue;
                         };
@@ -2799,15 +2820,15 @@ impl FlashBangGuiApp {
                             self.warn_dialog_with_action(warn.clone(), action);
                             self.status = warn;
                             self.apply_operation_event(engine::OperationEvent::Completed);
-                            self.connect_sequence_active = false;
+                            self.apply_connect_flow_event(engine::ConnectFlowEvent::Abort);
                             ctx.request_repaint();
                             continue;
                         }
 
+                        self.apply_connect_flow_event(engine::ConnectFlowEvent::IdOk);
                         self.apply_operation_event(engine::OperationEvent::Switched {
                             label: "Upload Driver".to_string(),
                         });
-                        self.pending_action = Some(DeferredAction::UploadDriver);
                     } else {
                         self.apply_operation_event(engine::OperationEvent::Completed);
                     }
@@ -2827,7 +2848,7 @@ impl FlashBangGuiApp {
                     if let Some(err) = error {
                         self.status = err;
                         self.apply_operation_event(engine::OperationEvent::Completed);
-                        self.connect_sequence_active = false;
+                        self.apply_connect_flow_event(engine::ConnectFlowEvent::Abort);
                         ctx.request_repaint();
                         continue;
                     }
@@ -2836,21 +2857,25 @@ impl FlashBangGuiApp {
                     self.data.log.push(format!("Upload driver: {}", driver_id));
                     self.status = format!("Treiber hochgeladen: {}", driver_id);
 
-                    if self.connect_sequence_active {
+                    if self.connect_flow_is_active() {
                         if let Some(chip_size) = self.chip_size() {
                             self.check_or_init_workbench_for_fetch_image(chip_size);
                             self.reset_inspector_buffers();
                             if self.auto_fetch {
+                                self.apply_connect_flow_event(engine::ConnectFlowEvent::UploadDriverOk {
+                                    auto_fetch: true,
+                                });
                                 self.apply_operation_event(engine::OperationEvent::Switched {
                                     label: "Fetch Image".to_string(),
                                 });
-                                self.pending_action = Some(DeferredAction::FetchImage);
                             } else {
-                                self.connect_sequence_active = false;
+                                self.apply_connect_flow_event(engine::ConnectFlowEvent::UploadDriverOk {
+                                    auto_fetch: false,
+                                });
                                 self.apply_operation_event(engine::OperationEvent::Completed);
                             }
                         } else {
-                            self.connect_sequence_active = false;
+                            self.apply_connect_flow_event(engine::ConnectFlowEvent::Abort);
                             self.apply_operation_event(engine::OperationEvent::Completed);
                         }
                     } else {
@@ -2960,8 +2985,8 @@ impl FlashBangGuiApp {
                     if let Some(err) = error {
                         self.status = format!("Fetch fehlgeschlagen: {err}");
                         self.apply_operation_event(engine::OperationEvent::Completed);
-                        if self.connect_sequence_active {
-                            self.connect_sequence_active = false;
+                        if self.connect_flow_is_active() {
+                            self.apply_connect_flow_event(engine::ConnectFlowEvent::Abort);
                         }
                         ctx.request_repaint();
                         continue;
@@ -2985,8 +3010,8 @@ impl FlashBangGuiApp {
                         self.status = "Fetch fehlgeschlagen: inkonsistente Worker-Daten".to_string();
                     }
 
-                    if self.connect_sequence_active {
-                        self.connect_sequence_active = false;
+                    if self.connect_flow_is_active() {
+                        self.apply_connect_flow_event(engine::ConnectFlowEvent::FetchDone);
                     }
                     self.apply_operation_event(engine::OperationEvent::Completed);
                     ctx.request_repaint();
@@ -3082,8 +3107,7 @@ impl FlashBangGuiApp {
                 self.serial_handle = Some(handle);
                 self.connected_port_name = Some(port.name.clone());
                 self.status = format!("Connected to {} @ {} baud", port.name, self.baud_rate);
-                self.connect_sequence_active = true;
-                self.pending_action = Some(DeferredAction::QueryFirmware);
+                self.apply_connect_flow_event(engine::ConnectFlowEvent::Start);
                 self.apply_operation_event(engine::OperationEvent::Switched {
                     label: "HELLO".to_string(),
                 });
@@ -5055,7 +5079,7 @@ impl eframe::App for FlashBangGuiApp {
         if do_disconnect {
             self.serial_handle = None;
             self.connected_port_name = None;
-            self.connect_sequence_active = false;
+            self.apply_connect_flow_event(engine::ConnectFlowEvent::Abort);
             self.operation_progress = None;
             self.status = "Serial port disconnected".to_string();
         }
@@ -5065,7 +5089,7 @@ impl eframe::App for FlashBangGuiApp {
         }
 
         if do_query_id {
-            self.connect_sequence_active = false;
+            self.apply_connect_flow_event(engine::ConnectFlowEvent::Abort);
             self.queue_action(ctx, "ID", DeferredAction::QueryId);
         }
 
@@ -5199,7 +5223,7 @@ impl eframe::App for FlashBangGuiApp {
                 self.warning_dialog = None;
                 self.serial_handle = None;
                 self.connected_port_name = None;
-                self.connect_sequence_active = false;
+                self.apply_connect_flow_event(engine::ConnectFlowEvent::Abort);
                 self.apply_operation_event(engine::OperationEvent::Completed);
                 self.status = "Serial port disconnected".to_string();
             }
@@ -5504,8 +5528,8 @@ impl eframe::App for FlashBangGuiApp {
                     if self.status.starts_with("Laufend:") || self.status.starts_with("Wartend:") {
                         self.status = format!("Aktion fehlgeschlagen: {e}");
                     }
-                    if self.connect_sequence_active {
-                        self.connect_sequence_active = false;
+                    if self.connect_flow_is_active() {
+                        self.apply_connect_flow_event(engine::ConnectFlowEvent::Abort);
                     }
                     self.apply_operation_event(engine::OperationEvent::Completed);
                     ctx.request_repaint();
