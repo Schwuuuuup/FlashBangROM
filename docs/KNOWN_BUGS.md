@@ -70,3 +70,6 @@ If there are multiple drivers for one Chip-ID you still get awarning having the 
 
  # Serial Monitor: collapsable output is needed:
   When flashing an image, the serial monitor gets flooded with "STATUS|FLASH_IMAGE|BYTE_PROGRAM|X|Y" messages, which are useful for debugging, but not for the user. It would be nice to have a collapsable section in the serial monitor that can hide these messages, or at least group them together.
+
+  # GUI: Inconsistent Dialogs
+  Some dialogs, like the "Select Driver" dialog, are Windows within the Application, others (like when creating a new Workbench) are separate OS dialogs. It would be nice to have a consistent look and feel for all dialogs, either by using custom windows or by using the OS dialogs for everything. The use of Windows within the Application is not ideal, because they cannot be moved outside of the main window, so the user cannot take advantage of multiple monitors or arrange the windows in a way that suits their workflow. 
