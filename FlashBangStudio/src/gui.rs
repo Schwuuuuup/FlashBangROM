@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
 use chrono::Local;
@@ -401,7 +401,7 @@ pub struct FlashBangGuiApp {
     warning_dialog: Option<WarningDialogState>,
     save_format_dialog: Option<SaveFormatDialogState>,
     runtime_state: engine::RuntimeState,
-    pending_action: Option<DeferredAction>,
+    deferred_actions: VecDeque<DeferredAction>,
     action_dispatch_tx: mpsc::Sender<ActionDispatchRequest>,
     action_dispatch_rx: mpsc::Receiver<ActionDispatchEvent>,
     serial_worker_tx: mpsc::Sender<SerialWorkerRequest>,
@@ -1005,7 +1005,7 @@ impl FlashBangGuiApp {
             warning_dialog: None,
             save_format_dialog: None,
             runtime_state: engine::RuntimeState::default(),
-            pending_action: None,
+            deferred_actions: VecDeque::new(),
             action_dispatch_tx: dispatch_tx,
             action_dispatch_rx: event_rx,
             serial_worker_tx,
@@ -2616,7 +2616,7 @@ impl FlashBangGuiApp {
     }
 
     fn schedule_deferred_action(&mut self, action: DeferredAction) {
-        self.pending_action = Some(action);
+        self.deferred_actions.push_back(action);
     }
 
     fn apply_operation_event(&mut self, event: engine::OperationEvent) {
@@ -3090,11 +3090,7 @@ impl FlashBangGuiApp {
         }
     }
 
-    fn execute_deferred_action(&mut self) -> Result<(), String> {
-        let action = self
-            .pending_action
-            .take()
-            .ok_or_else(|| "no deferred action".to_string())?;
+    fn execute_deferred_action(&mut self, action: DeferredAction) -> Result<(), String> {
         match action {
             DeferredAction::Connect => {
                 let selected_port = self.available_ports.get(self.selected_port_index).cloned();
@@ -5523,11 +5519,11 @@ impl eframe::App for FlashBangGuiApp {
             self.png_import_window_open = open;
         }
 
-        if self.pending_action.is_some() {
+        if let Some(action) = self.deferred_actions.pop_front() {
             if let Some(label) = self.runtime_state.busy_label() {
                 self.log_action(format!("Action execute: {label}"));
             }
-            match self.execute_deferred_action() {
+            match self.execute_deferred_action(action) {
                 Ok(()) => {
                     ctx.request_repaint();
                 }
