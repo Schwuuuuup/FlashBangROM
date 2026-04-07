@@ -1338,6 +1338,9 @@ impl FlashBangGuiApp {
                 if let Some(idx) = self.find_driver_index_by_id(&driver_id) {
                     self.selected_driver_index = idx;
                     if self.serial_handle.is_some() && !self.runtime_state.is_busy() {
+                        // The mismatch path aborts connect flow before showing the dialog.
+                        // Restart flow and advance to the ID step explicitly.
+                        self.apply_connect_flow_event(engine::ConnectFlowEvent::Start);
                         self.apply_connect_flow_event(engine::ConnectFlowEvent::FirmwareOk);
                         self.apply_operation_event(engine::OperationEvent::Queued {
                             label: "ID".to_string(),
