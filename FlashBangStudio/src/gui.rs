@@ -232,29 +232,12 @@ enum WarningAction {
     ResizeWorkbench { new_size: usize },
 }
 
-#[derive(Clone)]
-enum DeferredAction {
-    Connect,
-    QueryFirmware,
-    QueryId,
-    UploadDriver,
-    QueryDriver,
-    FetchImage,
-    FetchRange { start: usize, len: usize },
-    FetchSector { start: usize, size: usize },
-    EraseImage,
-    EraseSector { start: usize },
-    FlashImage,
-    FlashRange { start: usize, len: usize },
-    FlashSector { start: usize, size: usize },
-}
-
 enum ActionDispatchRequest {
-    Enqueue { label: String, action: DeferredAction },
+    Enqueue { label: String, action: engine::DeferredAction },
 }
 
 enum ActionDispatchEvent {
-    Ready { label: String, action: DeferredAction },
+    Ready { label: String, action: engine::DeferredAction },
 }
 
 enum SerialWorkerRequest {
@@ -401,7 +384,7 @@ pub struct FlashBangGuiApp {
     warning_dialog: Option<WarningDialogState>,
     save_format_dialog: Option<SaveFormatDialogState>,
     runtime_state: engine::RuntimeState,
-    deferred_actions: VecDeque<DeferredAction>,
+    deferred_actions: VecDeque<engine::DeferredAction>,
     action_dispatch_tx: mpsc::Sender<ActionDispatchRequest>,
     action_dispatch_rx: mpsc::Receiver<ActionDispatchEvent>,
     serial_worker_tx: mpsc::Sender<SerialWorkerRequest>,
@@ -2611,11 +2594,14 @@ impl FlashBangGuiApp {
                 engine::RuntimeIntent::QueueConnectStep(step) => {
                     self.schedule_deferred_action(Self::deferred_action_for_connect_step(step));
                 }
+                engine::RuntimeIntent::QueueDeferredAction(action) => {
+                    self.schedule_deferred_action(action);
+                }
             }
         }
     }
 
-    fn schedule_deferred_action(&mut self, action: DeferredAction) {
+    fn schedule_deferred_action(&mut self, action: engine::DeferredAction) {
         self.deferred_actions.push_back(action);
     }
 
@@ -2627,12 +2613,12 @@ impl FlashBangGuiApp {
         self.runtime_state.connect_active()
     }
 
-    fn deferred_action_for_connect_step(step: engine::ConnectFlowStep) -> DeferredAction {
+    fn deferred_action_for_connect_step(step: engine::ConnectFlowStep) -> engine::DeferredAction {
         match step {
-            engine::ConnectFlowStep::QueryFirmware => DeferredAction::QueryFirmware,
-            engine::ConnectFlowStep::QueryId => DeferredAction::QueryId,
-            engine::ConnectFlowStep::UploadDriver => DeferredAction::UploadDriver,
-            engine::ConnectFlowStep::FetchImage => DeferredAction::FetchImage,
+            engine::ConnectFlowStep::QueryFirmware => engine::DeferredAction::QueryFirmware,
+            engine::ConnectFlowStep::QueryId => engine::DeferredAction::QueryId,
+            engine::ConnectFlowStep::UploadDriver => engine::DeferredAction::UploadDriver,
+            engine::ConnectFlowStep::FetchImage => engine::DeferredAction::FetchImage,
         }
     }
 
@@ -2640,7 +2626,7 @@ impl FlashBangGuiApp {
         self.apply_runtime_event(engine::RuntimeEvent::ConnectFlow(event));
     }
 
-    fn queue_action(&mut self, ctx: &egui::Context, label: &str, action: DeferredAction) {
+    fn queue_action(&mut self, ctx: &egui::Context, label: &str, action: engine::DeferredAction) {
         if self.runtime_state.is_busy() {
             return;
         }
@@ -2665,11 +2651,11 @@ impl FlashBangGuiApp {
             match event {
                 ActionDispatchEvent::Ready { label, action } => {
                     self.log_action(format!("Action dispatch ready: {label}"));
-                    self.apply_operation_event(engine::OperationEvent::Switched {
+                    self.apply_runtime_event(engine::RuntimeEvent::DispatchReady {
                         label: label.clone(),
+                        action,
                     });
                     self.status = format!("Laufend: {label}");
-                    self.schedule_deferred_action(action);
                     ctx.request_repaint();
                 }
             }
@@ -3090,9 +3076,9 @@ impl FlashBangGuiApp {
         }
     }
 
-    fn execute_deferred_action(&mut self, action: DeferredAction) -> Result<(), String> {
+    fn execute_deferred_action(&mut self, action: engine::DeferredAction) -> Result<(), String> {
         match action {
-            DeferredAction::Connect => {
+            engine::DeferredAction::Connect => {
                 let selected_port = self.available_ports.get(self.selected_port_index).cloned();
                 let Some(port) = selected_port else {
                     self.status = "No serial port selected".to_string();
@@ -3117,7 +3103,7 @@ impl FlashBangGuiApp {
                 });
                 Ok(())
             }
-            DeferredAction::QueryFirmware => {
+            engine::DeferredAction::QueryFirmware => {
                 let handle = self
                     .serial_handle
                     .take()
@@ -3131,7 +3117,7 @@ impl FlashBangGuiApp {
                 self.status = "Laufend: HELLO (Worker)".to_string();
                 Ok(())
             }
-            DeferredAction::QueryId => {
+            engine::DeferredAction::QueryId => {
                 let driver = self
                     .available_drivers
                     .get(self.selected_driver_index)
@@ -3152,7 +3138,7 @@ impl FlashBangGuiApp {
                 self.status = "Laufend: ID-Abfrage (Worker)".to_string();
                 Ok(())
             }
-            DeferredAction::UploadDriver => {
+            engine::DeferredAction::UploadDriver => {
                 let driver = self
                     .available_drivers
                     .get(self.selected_driver_index)
@@ -3173,7 +3159,7 @@ impl FlashBangGuiApp {
                 self.status = "Laufend: Upload Driver (Worker)".to_string();
                 Ok(())
             }
-            DeferredAction::QueryDriver => {
+            engine::DeferredAction::QueryDriver => {
                 let handle = self
                     .serial_handle
                     .take()
@@ -3189,7 +3175,7 @@ impl FlashBangGuiApp {
                 self.status = "Laufend: Driver-Abfrage (INSPECT)".to_string();
                 Ok(())
             }
-            DeferredAction::FetchImage => {
+            engine::DeferredAction::FetchImage => {
                 let size = self
                     .chip_size()
                     .ok_or_else(|| "fetch image failed: kein erkannter Chip".to_string())?;
@@ -3208,7 +3194,7 @@ impl FlashBangGuiApp {
                 self.status = "Laufend: Fetch Image (Worker)".to_string();
                 Ok(())
             }
-            DeferredAction::FetchRange { start, len } => {
+            engine::DeferredAction::FetchRange { start, len } => {
                 let handle = self
                     .serial_handle
                     .take()
@@ -3223,7 +3209,7 @@ impl FlashBangGuiApp {
                 self.status = format!("Laufend: Fetch Range (Worker) 0x{start:05X}+{len}");
                 Ok(())
             }
-            DeferredAction::FetchSector { start, size } => {
+            engine::DeferredAction::FetchSector { start, size } => {
                 let handle = self
                     .serial_handle
                     .take()
@@ -3238,7 +3224,7 @@ impl FlashBangGuiApp {
                 self.status = format!("Laufend: Fetch Sector (Worker) 0x{start:05X}+{size}");
                 Ok(())
             }
-            DeferredAction::EraseImage => {
+            engine::DeferredAction::EraseImage => {
                 let chip_size = self
                     .chip_size()
                     .ok_or_else(|| "chip unknown - cannot erase chip".to_string())?;
@@ -3256,7 +3242,7 @@ impl FlashBangGuiApp {
                 self.status = "Laufend: Erase Image (Worker)".to_string();
                 Ok(())
             }
-            DeferredAction::EraseSector { start } => {
+            engine::DeferredAction::EraseSector { start } => {
                 let sector_size = self
                     .sector_size()
                     .ok_or_else(|| "chip unknown - cannot erase sector".to_string())?;
@@ -3275,7 +3261,7 @@ impl FlashBangGuiApp {
                 self.status = format!("Laufend: Erase Sector (Worker) 0x{start:05X}+{sector_size}");
                 Ok(())
             }
-            DeferredAction::FlashImage => {
+            engine::DeferredAction::FlashImage => {
                 let size = self
                     .chip_size()
                     .ok_or_else(|| "flash image failed: kein erkannter Chip".to_string())?;
@@ -3305,7 +3291,7 @@ impl FlashBangGuiApp {
                 self.status = "Laufend: Flash Image (Worker)".to_string();
                 Ok(())
             }
-            DeferredAction::FlashRange { start, len } => {
+            engine::DeferredAction::FlashRange { start, len } => {
                 let handle = self
                     .serial_handle
                     .take()
@@ -3332,7 +3318,7 @@ impl FlashBangGuiApp {
                 self.status = format!("Laufend: Flash Range (Worker) 0x{start:05X}+{len}");
                 Ok(())
             }
-            DeferredAction::FlashSector { start, size } => {
+            engine::DeferredAction::FlashSector { start, size } => {
                 let handle = self
                     .serial_handle
                     .take()
@@ -5089,20 +5075,20 @@ impl eframe::App for FlashBangGuiApp {
         }
 
         if do_connect {
-            self.queue_action(ctx, "Connect", DeferredAction::Connect);
+            self.queue_action(ctx, "Connect", engine::DeferredAction::Connect);
         }
 
         if do_query_id {
             self.apply_connect_flow_event(engine::ConnectFlowEvent::Abort);
-            self.queue_action(ctx, "ID", DeferredAction::QueryId);
+            self.queue_action(ctx, "ID", engine::DeferredAction::QueryId);
         }
 
         if do_query_driver {
-            self.queue_action(ctx, "Driver Abfragen", DeferredAction::QueryDriver);
+            self.queue_action(ctx, "Driver Abfragen", engine::DeferredAction::QueryDriver);
         }
 
         if do_upload_driver {
-            self.queue_action(ctx, "Upload Driver", DeferredAction::UploadDriver);
+            self.queue_action(ctx, "Upload Driver", engine::DeferredAction::UploadDriver);
         }
 
         self.handle_workspace_typing(ctx);
@@ -5678,7 +5664,7 @@ impl FlashBangGuiApp {
                                         "Fetch Image (Chip -> Inspector)",
                                     ).clicked() {
                                         self.log_action("Button: Fetch Image");
-                                        self.queue_action(&ctx, "Fetch Image", DeferredAction::FetchImage);
+                                        self.queue_action(&ctx, "Fetch Image", engine::DeferredAction::FetchImage);
                                     }
                                     if self.operation_button_enabled(
                                         ui,
@@ -5704,7 +5690,7 @@ impl FlashBangGuiApp {
                                                 self.queue_action(
                                                     &ctx,
                                                     "Fetch Range",
-                                                    DeferredAction::FetchRange { start, len },
+                                                    engine::DeferredAction::FetchRange { start, len },
                                                 );
                                             }
                                             Err(e) => self.status = format!("Invalid range: {e}"),
@@ -5730,7 +5716,7 @@ impl FlashBangGuiApp {
                                             self.queue_action(
                                                 &ctx,
                                                 "Fetch Sector",
-                                                DeferredAction::FetchSector { start, size },
+                                                engine::DeferredAction::FetchSector { start, size },
                                             );
                                         } else {
                                             self.status = "Invalid sector: no valid sector selected".to_string();
@@ -5752,7 +5738,7 @@ impl FlashBangGuiApp {
                                         "Erase Image (Chip -> Trash)",
                                     ).clicked() {
                                         self.log_action("Button: Erase Image");
-                                        self.queue_action(&ctx, "Erase Image", DeferredAction::EraseImage);
+                                        self.queue_action(&ctx, "Erase Image", engine::DeferredAction::EraseImage);
                                     }
                                     if self.operation_button_enabled(
                                         ui,
@@ -5774,7 +5760,7 @@ impl FlashBangGuiApp {
                                             self.queue_action(
                                                 &ctx,
                                                 "Erase Sector",
-                                                DeferredAction::EraseSector { start },
+                                                engine::DeferredAction::EraseSector { start },
                                             );
                                         } else {
                                             self.status = "Invalid sector: no valid sector selected".to_string();
@@ -5889,7 +5875,7 @@ impl FlashBangGuiApp {
                                 ).clicked() {
                                     self.log_action("Button: Flash Image");
                                     if self.chip_size().is_some() {
-                                        self.queue_action(&ctx, "Flash Image", DeferredAction::FlashImage);
+                                        self.queue_action(&ctx, "Flash Image", engine::DeferredAction::FlashImage);
                                     }
                                 }
                                 if self.operation_button_enabled(
@@ -5912,7 +5898,7 @@ impl FlashBangGuiApp {
                                         self.queue_action(
                                             &ctx,
                                             "Flash Sector",
-                                            DeferredAction::FlashSector { start, size },
+                                            engine::DeferredAction::FlashSector { start, size },
                                         );
                                     } else {
                                         self.status = "Invalid sector: no valid sector selected".to_string();
@@ -5942,7 +5928,7 @@ impl FlashBangGuiApp {
                                             self.queue_action(
                                                 &ctx,
                                                 "Flash Range",
-                                                DeferredAction::FlashRange { start, len },
+                                                engine::DeferredAction::FlashRange { start, len },
                                             );
                                         }
                                         Err(e) => self.status = format!("Invalid range: {e}"),

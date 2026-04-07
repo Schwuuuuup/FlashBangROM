@@ -112,6 +112,23 @@ pub enum ConnectFlowStep {
     FetchImage,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DeferredAction {
+    Connect,
+    QueryFirmware,
+    QueryId,
+    UploadDriver,
+    QueryDriver,
+    FetchImage,
+    FetchRange { start: usize, len: usize },
+    FetchSector { start: usize, size: usize },
+    EraseImage,
+    EraseSector { start: usize },
+    FlashImage,
+    FlashRange { start: usize, len: usize },
+    FlashSector { start: usize, size: usize },
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConnectFlowEvent {
     Start,
@@ -173,11 +190,13 @@ impl RuntimeState {
 pub enum RuntimeEvent {
     Operation(OperationEvent),
     ConnectFlow(ConnectFlowEvent),
+    DispatchReady { label: String, action: DeferredAction },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RuntimeIntent {
     QueueConnectStep(ConnectFlowStep),
+    QueueDeferredAction(DeferredAction),
 }
 
 #[derive(Clone, Debug, Default)]
@@ -208,6 +227,13 @@ pub fn reduce_runtime_event(current: &RuntimeState, event: RuntimeEvent) -> Runt
                     .collect(),
             }
         }
+        RuntimeEvent::DispatchReady { label, action } => RuntimeUpdate {
+            state: RuntimeState {
+                operation: reduce_operation_event(&current.operation, OperationEvent::Switched { label }),
+                connect_flow: current.connect_flow,
+            },
+            intents: vec![RuntimeIntent::QueueDeferredAction(action)],
+        },
     }
 }
 
