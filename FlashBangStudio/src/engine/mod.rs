@@ -161,10 +161,15 @@ pub enum RuntimeEvent {
     ConnectFlow(ConnectFlowEvent),
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RuntimeIntent {
+    QueueConnectStep(ConnectFlowStep),
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct RuntimeUpdate {
     pub state: RuntimeState,
-    pub next_connect_step: Option<ConnectFlowStep>,
+    pub intents: Vec<RuntimeIntent>,
 }
 
 pub fn reduce_runtime_event(current: &RuntimeState, event: RuntimeEvent) -> RuntimeUpdate {
@@ -174,7 +179,7 @@ pub fn reduce_runtime_event(current: &RuntimeState, event: RuntimeEvent) -> Runt
                 operation: reduce_operation_event(&current.operation, op_event),
                 connect_flow: current.connect_flow,
             },
-            next_connect_step: None,
+            intents: Vec::new(),
         },
         RuntimeEvent::ConnectFlow(flow_event) => {
             let (connect_flow, next_connect_step) = reduce_connect_flow(current.connect_flow, flow_event);
@@ -183,7 +188,10 @@ pub fn reduce_runtime_event(current: &RuntimeState, event: RuntimeEvent) -> Runt
                     operation: current.operation.clone(),
                     connect_flow,
                 },
-                next_connect_step,
+                intents: next_connect_step
+                    .map(RuntimeIntent::QueueConnectStep)
+                    .into_iter()
+                    .collect(),
             }
         }
     }

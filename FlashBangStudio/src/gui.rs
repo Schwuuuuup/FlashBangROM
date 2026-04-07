@@ -2606,9 +2606,17 @@ impl FlashBangGuiApp {
     fn apply_runtime_event(&mut self, event: engine::RuntimeEvent) {
         let update = engine::reduce_runtime_event(&self.runtime_state, event);
         self.runtime_state = update.state;
-        if let Some(step) = update.next_connect_step {
-            self.pending_action = Some(Self::deferred_action_for_connect_step(step));
+        for intent in update.intents {
+            match intent {
+                engine::RuntimeIntent::QueueConnectStep(step) => {
+                    self.schedule_deferred_action(Self::deferred_action_for_connect_step(step));
+                }
+            }
         }
+    }
+
+    fn schedule_deferred_action(&mut self, action: DeferredAction) {
+        self.pending_action = Some(action);
     }
 
     fn apply_operation_event(&mut self, event: engine::OperationEvent) {
@@ -2661,7 +2669,7 @@ impl FlashBangGuiApp {
                         label: label.clone(),
                     });
                     self.status = format!("Laufend: {label}");
-                    self.pending_action = Some(action);
+                    self.schedule_deferred_action(action);
                     ctx.request_repaint();
                 }
             }
