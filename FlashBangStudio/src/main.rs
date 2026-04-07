@@ -1,10 +1,8 @@
-mod mock_device;
 mod engine;
 mod driver_catalog;
 mod protocol;
 mod report;
 mod session;
-mod tui;
 mod gui;
 mod verify;
 mod version;
@@ -16,13 +14,6 @@ use verify::{compute_diff, DiffSummary};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    if args.iter().any(|a| a == "--demo") {
-        if let Err(e) = tui::run_tui() {
-            eprintln!("TUI error: {e}");
-        }
-        return;
-    }
-
     if args.iter().any(|a| a == "--gui") || args.len() == 1 {
         if let Err(e) = gui::run_gui() {
             eprintln!("GUI error: {e}");

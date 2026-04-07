@@ -1,8 +1,5 @@
 use crate::{
     driver_catalog,
-    mock_device::MockDevice,
-    protocol::{parse_device_frame, DeviceFrame},
-    version,
 };
 
 #[derive(Debug, Clone)]
@@ -71,6 +68,7 @@ impl ChipId {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug)]
 pub enum SessionError {
     Protocol(String),
@@ -168,98 +166,6 @@ pub fn parse_id_detail(detail: &str) -> (Option<u8>, Option<u8>) {
         }
     }
     (mfr, dev)
-}
-
-// ---------------------------------------------------------------------------
-// Mock session (backed by MockDevice)
-// ---------------------------------------------------------------------------
-
-pub struct MockSession {
-    device: MockDevice,
-}
-
-impl MockSession {
-    pub fn new() -> Self {
-        MockSession {
-            device: MockDevice::new(),
-        }
-    }
-
-    fn send(&self, cmd: &str) -> Vec<String> {
-        self.device.handle(cmd)
-    }
-}
-
-impl DeviceSession for MockSession {
-    fn handshake(&mut self) -> Result<HelloInfo, SessionError> {
-        let lines = self.send("HELLO");
-        for line in &lines {
-            if let Ok(DeviceFrame::Hello {
-                fw_version,
-                protocol_version,
-                capabilities,
-            }) = parse_device_frame(line)
-            {
-                if !version::is_protocol_compatible(&protocol_version) {
-                    return Err(SessionError::Protocol(format!(
-                        "unsupported protocol version: got {}, minimum {}",
-                        protocol_version,
-                        version::supported_protocol_version()
-                    )));
-                }
-                return Ok(HelloInfo {
-                    fw_version,
-                    protocol_version,
-                    capabilities: capabilities.split(',').map(String::from).collect(),
-                });
-            }
-        }
-        Err(SessionError::Protocol("no HELLO frame received".to_string()))
-    }
-
-    fn identify(&mut self) -> Result<ChipId, SessionError> {
-        let lines = self.send("ID");
-        for line in &lines {
-            if let Ok(DeviceFrame::Ok { command: _, detail }) = parse_device_frame(line) {
-                let (mfr, dev) = parse_id_detail(&detail);
-                let mfr = mfr.unwrap_or(0);
-                let dev = dev.unwrap_or(0);
-                return ChipId::from_ids(mfr, dev).ok_or(SessionError::ChipUnknown(mfr, dev));
-            }
-        }
-        Err(SessionError::Protocol("no ID response".to_string()))
-    }
-
-    fn read_range(
-        &mut self,
-        addr: u32,
-        len: u32,
-        on_progress: &mut dyn FnMut(u32, u32),
-    ) -> Result<Vec<u8>, SessionError> {
-        let cmd = format!("READ 0x{addr:05X} {len}");
-        let lines = self.send(&cmd);
-        let mut data: Vec<u8> = Vec::with_capacity(len as usize);
-
-        for line in &lines {
-            match parse_device_frame(line) {
-                Ok(DeviceFrame::DataHex {
-                    address: _,
-                    len: _,
-                    data: bytes,
-                }) => {
-                    data.extend_from_slice(&bytes);
-                    on_progress(data.len() as u32, len);
-                }
-                Ok(DeviceFrame::Ok { .. }) => {}
-                Ok(DeviceFrame::Err { code, message }) => {
-                    return Err(SessionError::Protocol(format!("{code}: {message}")));
-                }
-                _ => {}
-            }
-        }
-
-        Ok(data)
-    }
 }
 
 #[cfg(test)]

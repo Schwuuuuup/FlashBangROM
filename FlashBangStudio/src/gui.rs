@@ -5141,7 +5141,7 @@ impl eframe::App for FlashBangGuiApp {
                 .show(ctx, |ui| {
                     ui.heading("FlashBang Studio");
                     ui.label("SST39 programmer host GUI for BluePill-based hardware.");
-                    ui.label("Current mode: GUI + serial debug monitor + mock fallback.");
+                    ui.label("Current mode: GUI + serial debug monitor.");
                     ui.label("Build target: Rust/Cargo 1.75 compatible stack.");
                     ui.separator();
                     ui.monospace(format!("Build string: {}", version::version_text()));

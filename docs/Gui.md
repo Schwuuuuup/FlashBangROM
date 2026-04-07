@@ -43,7 +43,7 @@ Diese Datei beschreibt den aktuellen Aufbau der Desktop-GUI in `FlashBangStudio`
 
 ## 2.1 Einstieg und App-Lebenszyklus
 - Datei: `FlashBangStudio/src/main.rs`
-  - Argumentrouting (`--gui`, `--demo`)
+  - Argumentrouting (`--gui`)
   - Startpunkt fuer GUI: `gui::run_gui()`
 - Datei: `FlashBangStudio/src/gui.rs`
   - `run_gui()` erstellt eframe-Fenster
@@ -412,9 +412,7 @@ Beispiel: Neuer Statistik-Block in der Hauptansicht.
    - `cargo test`
 3. GUI starten:
    - `cargo run -- --gui`
-4. Fuer TUI-Demo alternativ:
-   - `cargo run -- --demo`
-5. Fuer GUI-Arbeit zuerst `gui.rs` lesen, dann je nach Thema `protocol.rs`, `session.rs`, `verify.rs`, `report.rs`.
+4. Fuer GUI-Arbeit zuerst `gui.rs` lesen, dann je nach Thema `protocol.rs`, `session.rs`, `verify.rs`, `report.rs`.
 
 ## 7) TODO fuer kuenftige GUI-Doku-Vertiefung
 
