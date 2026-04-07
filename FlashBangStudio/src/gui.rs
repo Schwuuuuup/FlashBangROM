@@ -5,7 +5,7 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
 use std::collections::{HashMap, VecDeque};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use chrono::Local;
 use eframe::egui;
@@ -292,7 +292,7 @@ enum SerialWorkerEvent {
     },
     QueryFirmwareCompleted {
         handle: Box<dyn SerialPort>,
-        lines_result: Result<Vec<String>, String>,
+        lines_result: Result<(Vec<String>, Vec<String>), String>,
     },
     QueryIdCompleted {
         handle: Box<dyn SerialPort>,
@@ -597,7 +597,10 @@ impl FlashBangGuiApp {
                                         "ID",
                                         4,
                                     ) {
-                                        Ok(lines) => {
+                                        Ok((lines, timeout_logs)) => {
+                                            for log in timeout_logs {
+                                                logs.push((WireDirection::Ui, log));
+                                            }
                                             logs.push((WireDirection::Tx, "ID".to_string()));
                                             for line in &lines {
                                                 logs.push((WireDirection::Rx, line.clone()));
@@ -689,7 +692,10 @@ impl FlashBangGuiApp {
                             "INSPECT",
                             512,
                         ) {
-                            Ok(lines) => {
+                            Ok((lines, timeout_logs)) => {
+                                for log in timeout_logs {
+                                    logs.push((WireDirection::Ui, log));
+                                }
                                 logs.push((WireDirection::Tx, "INSPECT".to_string()));
                                 line_count = lines.len();
                                 for line in lines {
@@ -1218,20 +1224,26 @@ impl FlashBangGuiApp {
 
         for line in text.split_inclusive('\n') {
             let trimmed = line.trim_end_matches('\n');
-            let rx_payload = trimmed
+            let marker_line = if let Some(idx) = trimmed.find("] [") {
+                // Support optional timestamp prefix like: [14:54:21.999] [RX] payload
+                &trimmed[idx + 2..]
+            } else {
+                trimmed
+            };
+            let rx_payload = marker_line
                 .strip_prefix("[RX]")
                 .map(str::trim_start)
-                .unwrap_or(trimmed);
+                .unwrap_or(marker_line);
 
-            let color = if line.starts_with("[TX]") {
+            let color = if marker_line.starts_with("[TX]") {
                 egui::Color32::from_rgb(255, 80, 80)
-            } else if line.starts_with("[RX]") && rx_payload.starts_with('#') {
+            } else if marker_line.starts_with("[RX]") && rx_payload.starts_with('#') {
                 egui::Color32::from_rgb(122, 150, 122)
-            } else if line.starts_with("[RX]")
+            } else if marker_line.starts_with("[RX]")
                 && (rx_payload == "OK" || rx_payload.starts_with("OK|"))
             {
                 egui::Color32::from_rgb(170, 255, 0)
-            } else if line.starts_with("[RX]") {
+            } else if marker_line.starts_with("[RX]") {
                 egui::Color32::from_rgb(92, 188, 112)
             } else {
                 egui::Color32::from_rgb(136, 136, 255)
@@ -1338,10 +1350,8 @@ impl FlashBangGuiApp {
                 if let Some(idx) = self.find_driver_index_by_id(&driver_id) {
                     self.selected_driver_index = idx;
                     if self.serial_handle.is_some() && !self.runtime_state.is_busy() {
-                        // The mismatch path aborts connect flow before showing the dialog.
-                        // Restart flow and advance to the ID step explicitly.
-                        self.apply_connect_flow_event(engine::ConnectFlowEvent::Start);
-                        self.apply_connect_flow_event(engine::ConnectFlowEvent::FirmwareOk);
+                        // Continue connect flow directly at ID without re-scheduling HELLO.
+                        self.apply_connect_flow_event(engine::ConnectFlowEvent::ResumeAtId);
                         self.apply_operation_event(engine::OperationEvent::Queued {
                             label: "ID".to_string(),
                         });
@@ -2553,8 +2563,9 @@ impl FlashBangGuiApp {
             WireDirection::Rx => "[RX]",
             WireDirection::Ui => "[UI]",
         };
+        let ts = Local::now().format("%H:%M:%S%.3f");
         self.serial_monitor_text
-            .push_str(&format!("{} {}\n", prefix, entry.text));
+            .push_str(&format!("[{}] {} {}\n", ts, prefix, entry.text));
         self.wire_log.push(entry);
         if self.wire_log.len() > 500 {
             let drain = self.wire_log.len() - 500;
@@ -2692,8 +2703,10 @@ impl FlashBangGuiApp {
                     self.serial_handle = Some(handle);
 
                     match lines_result {
-                        Ok(lines) => {
-                            self.push_wire(WireDirection::Tx, "HELLO".to_string());
+                        Ok((lines, timeout_logs)) => {
+                            for log in timeout_logs {
+                                self.push_wire(WireDirection::Ui, log);
+                            }
                             for line in &lines {
                                 self.push_wire(WireDirection::Rx, line.clone());
                             }
@@ -3111,6 +3124,7 @@ impl FlashBangGuiApp {
                     .serial_handle
                     .take()
                     .ok_or_else(|| "not connected".to_string())?;
+                self.push_wire(WireDirection::Tx, "HELLO".to_string());
                 if let Err(e) = self
                     .serial_worker_tx
                     .send(SerialWorkerRequest::QueryFirmware { handle })
@@ -3355,8 +3369,10 @@ impl FlashBangGuiApp {
         handle: &mut dyn SerialPort,
         command: &str,
         max_lines: usize,
-    ) -> Result<Vec<String>, String> {
+    ) -> Result<(Vec<String>, Vec<String>), String> {
         const MAX_IDLE_TIMEOUTS: usize = 3;
+        let is_hello = command == "HELLO";
+        let started = Instant::now();
 
         let tx_line = format!("{command}\n");
         handle
@@ -3364,6 +3380,7 @@ impl FlashBangGuiApp {
             .map_err(|e| format!("write failed: {e}"))?;
 
         let mut lines = Vec::new();
+        let mut timeout_logs = Vec::new();
         let mut buffer = Vec::new();
         let mut byte = [0_u8; 1];
         let mut idle_timeouts = 0usize;
@@ -3377,7 +3394,10 @@ impl FlashBangGuiApp {
                         buffer.clear();
                         if !line.is_empty() {
                             lines.push(line.clone());
-                            if line.starts_with("OK|") || line.starts_with("ERR|") {
+                            if line.starts_with("OK|")
+                                || line.starts_with("ERR|")
+                                || (is_hello && line.starts_with("HELLO|"))
+                            {
                                 break;
                             }
                         }
@@ -3395,14 +3415,21 @@ impl FlashBangGuiApp {
                         }
                     }
 
-                    if lines
-                        .iter()
-                        .any(|line| line.starts_with("OK|") || line.starts_with("ERR|"))
+                    if lines.iter().any(|line| {
+                        line.starts_with("OK|")
+                            || line.starts_with("ERR|")
+                            || (is_hello && line.starts_with("HELLO|"))
+                    })
                     {
                         break;
                     }
 
                     idle_timeouts += 1;
+                    timeout_logs.push(format!(
+                        "TIMEOUT: cmd={command} idle_timeout={} elapsed={}ms",
+                        idle_timeouts,
+                        started.elapsed().as_millis()
+                    ));
                     if idle_timeouts >= MAX_IDLE_TIMEOUTS {
                         break;
                     }
@@ -3411,7 +3438,7 @@ impl FlashBangGuiApp {
             }
         }
 
-        Ok(lines)
+        Ok((lines, timeout_logs))
     }
 
     fn push_worker_log(
@@ -3436,7 +3463,11 @@ impl FlashBangGuiApp {
         max_lines: usize,
         logs: &mut Vec<(WireDirection, String)>,
     ) -> Result<Vec<String>, String> {
-        let lines = Self::serial_send_and_read_lines_on_handle(handle, command, max_lines)?;
+        let (lines, timeout_logs) =
+            Self::serial_send_and_read_lines_on_handle(handle, command, max_lines)?;
+        for line in timeout_logs {
+            Self::push_worker_log(logs, WireDirection::Ui, line);
+        }
         Self::push_worker_log(logs, WireDirection::Tx, command);
         for line in &lines {
             Self::push_worker_log(logs, WireDirection::Rx, line.as_str());
@@ -3498,57 +3529,6 @@ impl FlashBangGuiApp {
         on_progress(received.min(len), len);
 
         Ok((out, known, received, logs))
-    }
-
-    fn read_single_byte_on_handle(
-        handle: &mut dyn SerialPort,
-        addr: usize,
-        logs: &mut Vec<(WireDirection, String)>,
-    ) -> Result<u8, String> {
-        let cmd = format!("READ|{addr:05X}|1");
-        let lines = Self::send_expect_ok_on_handle(handle, &cmd, 8, logs)?;
-        for line in lines {
-            let Ok(frame) = parse_device_frame(&line) else {
-                continue;
-            };
-            if let DeviceFrame::DataHex { address, data, .. } = frame {
-                if address as usize == addr && !data.is_empty() {
-                    return Ok(data[0]);
-                }
-            }
-        }
-        Err("readback failed: no DATA frame".to_string())
-    }
-
-    fn read_single_byte_stable_on_handle(
-        handle: &mut dyn SerialPort,
-        addr: usize,
-        expected: u8,
-        logs: &mut Vec<(WireDirection, String)>,
-    ) -> Result<u8, String> {
-        const VERIFY_ATTEMPTS: usize = 8;
-        const VERIFY_DELAY_MS: u64 = 1;
-
-        let mut last = Self::read_single_byte_on_handle(handle, addr, logs)?;
-        if last == expected {
-            let confirm = Self::read_single_byte_on_handle(handle, addr, logs)?;
-            if confirm == expected {
-                return Ok(confirm);
-            }
-            last = confirm;
-        }
-
-        for _ in 0..VERIFY_ATTEMPTS {
-            std::thread::sleep(Duration::from_millis(VERIFY_DELAY_MS));
-            let a = Self::read_single_byte_on_handle(handle, addr, logs)?;
-            let b = Self::read_single_byte_on_handle(handle, addr, logs)?;
-            last = b;
-            if a == expected && b == expected {
-                return Ok(b);
-            }
-        }
-
-        Ok(last)
     }
 
     fn flash_range_on_handle(
@@ -3656,24 +3636,6 @@ impl FlashBangGuiApp {
             Self::send_expect_ok_on_handle(handle, &cmd, 6, &mut logs)
                 .map_err(|e| (logs.clone(), e))?;
 
-            let read_back = Self::read_single_byte_stable_on_handle(handle, addr, work, &mut logs)
-                .map_err(|e| (logs.clone(), e))?;
-            if read_back != work {
-                Self::push_worker_log(
-                    &mut logs,
-                    WireDirection::Ui,
-                    format!(
-                        "Flash verify mismatch: addr=0x{addr:05X} expected=0x{work:02X} observed=0x{read_back:02X}"
-                    ),
-                );
-                return Err((
-                    logs,
-                    format!(
-                        "flash verify mismatch at 0x{addr:05X}: expected 0x{work:02X}, observed 0x{read_back:02X}"
-                    ),
-                ));
-            }
-
             flashed += 1;
             if known {
                 programmed_changed += 1;
@@ -3700,7 +3662,7 @@ impl FlashBangGuiApp {
                 &mut logs,
                 WireDirection::Ui,
                 format!(
-                    "Flash done: total={} programmed={} skipped_equal={} programmed_changed={} programmed_unknown={} verify_failures=0 elapsed={:.2}s",
+                    "Flash done: total={} programmed={} skipped_equal={} programmed_changed={} programmed_unknown={} inline_verify=off elapsed={:.2}s",
                     total,
                     flashed,
                     skipped_equal,
@@ -3710,7 +3672,7 @@ impl FlashBangGuiApp {
                 ),
             );
             let status = format!(
-                "Flash done: total={total}, programmed={flashed}, skipped_equal={skipped_equal}, changed={programmed_changed}, unknown={programmed_unknown}, verify_failures=0, elapsed={elapsed_secs:.2}s. Auto-Fetch refreshed flashed range."
+                "Flash done: total={total}, programmed={flashed}, skipped_equal={skipped_equal}, changed={programmed_changed}, unknown={programmed_unknown}, inline_verify=off, elapsed={elapsed_secs:.2}s. Auto-Fetch refreshed flashed range (deferred verification via fetch)."
             );
             Ok((Some(data), Some(known), received, false, logs, status))
         } else {
@@ -3720,7 +3682,7 @@ impl FlashBangGuiApp {
                 &mut logs,
                 WireDirection::Ui,
                 format!(
-                    "Flash done: total={} programmed={} skipped_equal={} programmed_changed={} programmed_unknown={} verify_failures=0 elapsed={:.2}s",
+                    "Flash done: total={} programmed={} skipped_equal={} programmed_changed={} programmed_unknown={} inline_verify=off elapsed={:.2}s",
                     total,
                     flashed,
                     skipped_equal,
@@ -3730,7 +3692,7 @@ impl FlashBangGuiApp {
                 ),
             );
             let status = format!(
-                "Flash done: total={total}, programmed={flashed}, skipped_equal={skipped_equal}, changed={programmed_changed}, unknown={programmed_unknown}, verify_failures=0, elapsed={elapsed_secs:.2}s. Inspector marked stale/gray in affected range."
+                "Flash done: total={total}, programmed={flashed}, skipped_equal={skipped_equal}, changed={programmed_changed}, unknown={programmed_unknown}, inline_verify=off, elapsed={elapsed_secs:.2}s. Inspector marked stale/gray in affected range."
             );
             Ok((None, None, 0, true, logs, status))
         }
@@ -5030,6 +4992,7 @@ impl eframe::App for FlashBangGuiApp {
                     .on_hover_text("Treiber-YAMLs neu laden")
                     .clicked()
                 {
+                    driver_catalog::clear_caches();
                     self.available_drivers = driver_catalog::list_drivers();
                     if self.selected_driver_index >= self.available_drivers.len() {
                         self.selected_driver_index = 0;

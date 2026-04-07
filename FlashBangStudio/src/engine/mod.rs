@@ -132,6 +132,7 @@ pub enum DeferredAction {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConnectFlowEvent {
     Start,
+    ResumeAtId,
     FirmwareOk,
     IdOk,
     UploadDriverOk { auto_fetch: bool },
@@ -145,6 +146,7 @@ pub fn reduce_connect_flow(
 ) -> (ConnectFlowState, Option<ConnectFlowStep>) {
     match event {
         ConnectFlowEvent::Start => (ConnectFlowState::Active, Some(ConnectFlowStep::QueryFirmware)),
+        ConnectFlowEvent::ResumeAtId => (ConnectFlowState::Active, Some(ConnectFlowStep::QueryId)),
         ConnectFlowEvent::FirmwareOk if state == ConnectFlowState::Active => {
             (ConnectFlowState::Active, Some(ConnectFlowStep::QueryId))
         }

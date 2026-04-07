@@ -1,19 +1,20 @@
 use std::fs;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use serde::Deserialize;
 
 use crate::session::ChipId;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 struct DriverModel {
     jedec_id: String,
     name: String,
     size_bytes: u32,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 struct DriverFile {
     id: String,
     address_bits: u8,
@@ -22,7 +23,7 @@ struct DriverFile {
     models: Vec<DriverModel>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 struct DriverSequences {
     id_entry: String,
     id_read: String,
@@ -71,6 +72,37 @@ fn parse_driver_file(path: &Path) -> Result<DriverFile, String> {
         .map_err(|e| format!("failed to parse {}: {e}", path.display()))
 }
 
+type DriverParseCache = HashMap<PathBuf, Result<DriverFile, String>>;
+static DRIVER_FILE_CACHE: OnceLock<Mutex<DriverParseCache>> = OnceLock::new();
+
+fn driver_file_cache() -> &'static Mutex<DriverParseCache> {
+    DRIVER_FILE_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn parse_driver_file_cached(path: &Path) -> Result<DriverFile, String> {
+    if let Some(cached) = driver_file_cache()
+        .lock()
+        .ok()
+        .and_then(|cache| cache.get(path).cloned())
+    {
+        return cached;
+    }
+
+    let parsed = parse_driver_file(path);
+
+    if let Ok(mut cache) = driver_file_cache().lock() {
+        cache.insert(path.to_path_buf(), parsed.clone());
+    }
+
+    parsed
+}
+
+pub fn clear_caches() {
+    if let Ok(mut cache) = driver_file_cache().lock() {
+        cache.clear();
+    }
+}
+
 pub fn list_drivers() -> Vec<DriverEntry> {
     let mut out = Vec::new();
     for dir in candidate_dirs() {
@@ -82,7 +114,7 @@ pub fn list_drivers() -> Vec<DriverEntry> {
             if path.extension().and_then(|s| s.to_str()) != Some("yaml") {
                 continue;
             }
-            if let Ok(driver) = parse_driver_file(&path) {
+            if let Ok(driver) = parse_driver_file_cached(&path) {
                 out.push(DriverEntry {
                     id: driver.id,
                     path,
@@ -98,7 +130,7 @@ pub fn list_drivers() -> Vec<DriverEntry> {
 }
 
 pub fn build_upload_plan(path: &Path) -> Result<DriverUploadPlan, String> {
-    let driver = parse_driver_file(path)?;
+    let driver = parse_driver_file_cached(path)?;
     let max_size_model = driver
         .models
         .iter()
@@ -135,7 +167,7 @@ fn lookup_in_dir(dir: &Path, mfr: u8, dev: u8) -> Option<ChipId> {
         if path.extension().and_then(|s| s.to_str()) != Some("yaml") {
             continue;
         }
-        let parsed = parse_driver_file(&path).ok()?;
+        let parsed = parse_driver_file_cached(&path).ok()?;
         for model in parsed.models {
             let Some((mm, dd)) = parse_jedec(&model.jedec_id) else {
                 continue;
