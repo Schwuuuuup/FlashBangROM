@@ -13,6 +13,22 @@
 #include "version_info.h"
 
 namespace {
+bool decodeHexNibble(char c, uint8_t& out) {
+  if (c >= '0' && c <= '9') {
+    out = static_cast<uint8_t>(c - '0');
+    return true;
+  }
+  if (c >= 'A' && c <= 'F') {
+    out = static_cast<uint8_t>(10 + (c - 'A'));
+    return true;
+  }
+  if (c >= 'a' && c <= 'f') {
+    out = static_cast<uint8_t>(10 + (c - 'a'));
+    return true;
+  }
+  return false;
+}
+
 uint32_t makeAddrForBank(uint8_t bank, uint8_t pattern) {
   if (bank == 0) {
     return static_cast<uint32_t>(pattern);
@@ -164,6 +180,7 @@ void executeCommand(const CommandContext& ctx) {
       Serial.println("# ID                                         : read chip ID using configured ID sequences");
       Serial.println("# READ|<addr-hex>|<len-dec>                  : read bytes from chip");
       Serial.println("# PROGRAM_BYTE|<addr-hex>|<value-hex>        : program one byte");
+      Serial.println("# PROGRAM_RANGE|<addr-hex>|<hex-bytes>       : program byte range (auto-increment)");
       Serial.println("# SECTOR_ERASE|<addr-hex>                    : erase sector containing address");
       Serial.println("# CHIP_ERASE                                 : erase complete chip");
       Serial.println("# WRITE_STATUS|<addr-hex>|<exp-hex>|<ms-dec> : poll write completion status");
@@ -213,6 +230,74 @@ void executeCommand(const CommandContext& ctx) {
         sendErr("E_VERIFY", detail);
       } else {
         sendErr("E_TIMEOUT", "program timeout");
+      }
+      break;
+    }
+
+    case CommandType::ProgramRange: {
+      int p1 = g_rawLine.indexOf('|');
+      int p2 = (p1 >= 0) ? g_rawLine.indexOf('|', p1 + 1) : -1;
+      if (p1 < 0 || p2 < 0) {
+        sendErr("E_PARSE", "program range malformed");
+        break;
+      }
+
+      String payload = g_rawLine.substring(p2 + 1);
+      payload.trim();
+      if (payload.length() == 0 || (payload.length() % 2) != 0) {
+        sendErr("E_PARAM", "program range payload invalid");
+        break;
+      }
+
+      const uint32_t byteLen = static_cast<uint32_t>(payload.length() / 2);
+      if (!validateRange(ctx.addr, byteLen)) {
+        sendErr("E_RANGE", "program range out of bounds");
+        break;
+      }
+
+      static constexpr uint32_t MAX_PROGRAM_RANGE_BYTES = 96;
+      if (byteLen > MAX_PROGRAM_RANGE_BYTES) {
+        sendErr("E_PARAM", "program range payload too large");
+        break;
+      }
+
+      uint8_t buf[MAX_PROGRAM_RANGE_BYTES];
+      bool decodeOk = true;
+      for (uint32_t i = 0; i < byteLen; ++i) {
+        uint8_t hi = 0;
+        uint8_t lo = 0;
+        if (!decodeHexNibble(payload.charAt(i * 2), hi) ||
+            !decodeHexNibble(payload.charAt(i * 2 + 1), lo)) {
+          decodeOk = false;
+          break;
+        }
+        buf[i] = static_cast<uint8_t>((hi << 4) | lo);
+      }
+      if (!decodeOk) {
+        sendErr("E_PARAM", "program range payload not hex");
+        break;
+      }
+
+      bool ok = false;
+      const char* rangeScript = findSequence(g_driverSlot, "PROGRAM_RANGE");
+      if (rangeScript != nullptr) {
+        ok = executeProgramRange(rangeScript, ctx.addr, buf, byteLen);
+      } else {
+        ok = true;
+        for (uint32_t i = 0; i < byteLen; ++i) {
+          uint8_t observed = 0;
+          bool verifyMismatch = false;
+          if (!driverProgramByte(ctx.addr + i, buf[i], &observed, &verifyMismatch)) {
+            ok = false;
+            break;
+          }
+        }
+      }
+
+      if (ok) {
+        sendOk("PROGRAM_RANGE", "done");
+      } else {
+        sendErr("E_TIMEOUT", "program range failed");
       }
       break;
     }

@@ -18,6 +18,7 @@ String toHex2(uint8_t v) {
 
 const char* compactOkCommand(const char* cmd) {
   if (strcmp(cmd, "PROGRAM_BYTE") == 0) return "W";
+  if (strcmp(cmd, "PROGRAM_RANGE") == 0) return "G";
   if (strcmp(cmd, "READ") == 0) return "R";
   if (strcmp(cmd, "SECTOR_ERASE") == 0) return "E";
   if (strcmp(cmd, "CHIP_ERASE") == 0) return "C";

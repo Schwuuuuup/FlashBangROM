@@ -17,6 +17,7 @@ enum class CommandType {
   Id,
   Read,
   ProgramByte,
+  ProgramRange,
   SectorErase,
   ChipErase,
   WriteStatus,

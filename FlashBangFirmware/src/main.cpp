@@ -19,8 +19,8 @@ static constexpr uint8_t MAX_CMD_LINES_PER_LOOP = 8;
 
 const char* kCommandPrefixes[] = {
   "PARAMETER|", "SEQUENCE|", "HELLO", "ID", "INSPECT", "DRIVER_RESET",
-  "READ|",      "PROGRAM_BYTE|", "SECTOR_ERASE|", "CHIP_ERASE",
-  "WRITE_STATUS|", "P|", "S|", "R|", "W|", "E|", "T|", "ADDR_BUS_TEST|", "DATA_BUS_MONITOR_START",
+  "READ|",      "PROGRAM_BYTE|", "PROGRAM_RANGE|", "SECTOR_ERASE|", "CHIP_ERASE",
+  "WRITE_STATUS|", "P|", "S|", "R|", "W|", "G|", "E|", "T|", "ADDR_BUS_TEST|", "DATA_BUS_MONITOR_START",
   "DATA_BUS_MONITOR_STOP", "SET_A", "?"};
 
 char g_rxCurrent[RX_LINE_MAX];
@@ -108,6 +108,10 @@ String sanitizeIncomingLine(const String& line) {
     clean = clean.substring(0, concatIdx);
   }
   concatIdx = clean.indexOf("SEQUENCE|", 1);
+  if (concatIdx > 0) {
+    clean = clean.substring(0, concatIdx);
+  }
+  concatIdx = clean.indexOf("PROGRAM_RANGE|", 1);
   if (concatIdx > 0) {
     clean = clean.substring(0, concatIdx);
   }

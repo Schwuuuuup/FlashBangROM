@@ -3471,6 +3471,9 @@ impl FlashBangGuiApp {
         if let Some(rest) = command.strip_prefix("PROGRAM_BYTE|") {
             return format!("W|{rest}");
         }
+        if let Some(rest) = command.strip_prefix("PROGRAM_RANGE|") {
+            return format!("G|{rest}");
+        }
         if let Some(rest) = command.strip_prefix("SECTOR_ERASE|") {
             return format!("E|{rest}");
         }
@@ -3527,6 +3530,15 @@ impl FlashBangGuiApp {
         }
 
         Err("no OK frame received".to_string())
+    }
+
+    fn bytes_to_hex_upper(bytes: &[u8]) -> String {
+        let mut out = String::with_capacity(bytes.len() * 2);
+        for b in bytes {
+            use std::fmt::Write as _;
+            let _ = write!(&mut out, "{:02X}", b);
+        }
+        out
     }
 
     fn fetch_range_on_handle(
@@ -3664,28 +3676,59 @@ impl FlashBangGuiApp {
             on_progress(0, len);
         }
 
-        for i in 0..len {
-            let addr = start + i;
-            let work = work_data[i];
-            let known = ro_known[i];
-            let ro = ro_data[i];
-            if known && ro == work {
+        const PROGRAM_RANGE_CHUNK: usize = 64;
+        let mut i = 0usize;
+        while i < len {
+            if ro_known[i] && ro_data[i] == work_data[i] {
                 skipped_equal += 1;
-                on_progress(i + 1, len);
+                i += 1;
+                on_progress(i, len);
                 continue;
             }
 
-            let cmd = format!("PROGRAM_BYTE|{addr:05X}|{work:02X}");
-            Self::send_expect_ok_on_handle(handle, &cmd, 6, &mut logs)
-                .map_err(|e| (logs.clone(), e))?;
-
-            flashed += 1;
-            if known {
-                programmed_changed += 1;
-            } else {
-                programmed_unknown += 1;
+            let chunk_start = i;
+            let mut payload: Vec<u8> = Vec::with_capacity(PROGRAM_RANGE_CHUNK);
+            while i < len && payload.len() < PROGRAM_RANGE_CHUNK {
+                if ro_known[i] && ro_data[i] == work_data[i] {
+                    break;
+                }
+                payload.push(work_data[i]);
+                i += 1;
             }
-            on_progress(i + 1, len);
+
+            if payload.is_empty() {
+                on_progress(i, len);
+                continue;
+            }
+
+            let cmd = format!(
+                "PROGRAM_RANGE|{:05X}|{}",
+                start + chunk_start,
+                Self::bytes_to_hex_upper(&payload)
+            );
+
+            match Self::send_expect_ok_on_handle(handle, &cmd, 8, &mut logs) {
+                Ok(_) => {}
+                Err(_) => {
+                    // Firmware fallback path: if range write is not supported, retry per-byte.
+                    for (off, b) in payload.iter().enumerate() {
+                        let addr = start + chunk_start + off;
+                        let byte_cmd = format!("PROGRAM_BYTE|{addr:05X}|{b:02X}");
+                        Self::send_expect_ok_on_handle(handle, &byte_cmd, 6, &mut logs)
+                            .map_err(|e| (logs.clone(), e))?;
+                    }
+                }
+            }
+
+            flashed += payload.len();
+            for idx in chunk_start..i {
+                if ro_known[idx] {
+                    programmed_changed += 1;
+                } else {
+                    programmed_unknown += 1;
+                }
+            }
+            on_progress(i, len);
         }
 
         let total = len;

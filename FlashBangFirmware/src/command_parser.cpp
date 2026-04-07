@@ -172,6 +172,19 @@ bool parseLine(const String& line, CommandContext& ctx) {
     return true;
   }
 
+  if (op == "PROGRAM_RANGE" || op == "G") {
+    int p2 = normalized.indexOf('|', p1 + 1);
+    if (p2 < 0) {
+      return false;
+    }
+    String addrText = normalized.substring(p1 + 1, p2);
+    if (!parseHex32(addrText, ctx.addr)) {
+      return false;
+    }
+    ctx.cmd = CommandType::ProgramRange;
+    return true;
+  }
+
   if (op == "SECTOR_ERASE" || op == "E") {
     String addrText = normalized.substring(p1 + 1);
     if (!parseHex32(addrText, ctx.addr)) {
