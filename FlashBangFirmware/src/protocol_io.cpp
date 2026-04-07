@@ -1,6 +1,7 @@
 #include "protocol_io.h"
 
 #include <cstdio>
+#include <cstring>
 
 namespace {
 char nibbleHex(uint8_t v) {
@@ -14,13 +15,32 @@ String toHex2(uint8_t v) {
   s += nibbleHex(v & 0x0F);
   return s;
 }
+
+const char* compactOkCommand(const char* cmd) {
+  if (strcmp(cmd, "PROGRAM_BYTE") == 0) return "W";
+  if (strcmp(cmd, "READ") == 0) return "R";
+  if (strcmp(cmd, "SECTOR_ERASE") == 0) return "E";
+  if (strcmp(cmd, "CHIP_ERASE") == 0) return "C";
+  if (strcmp(cmd, "PARAMETER") == 0) return "P";
+  if (strcmp(cmd, "SEQUENCE") == 0) return "S";
+  if (strcmp(cmd, "WRITE_STATUS") == 0) return "T";
+  return cmd;
+}
+
+String compactOkDetail(const String& detail) {
+  if (detail == "done") return "d";
+  if (detail == "stable") return "s";
+  return detail;
+}
 }  // namespace
 
 void sendOk(const char* cmd, const String& detail) {
+  const char* compact_cmd = compactOkCommand(cmd);
+  String compact_detail = compactOkDetail(detail);
   Serial.print("OK|");
-  Serial.print(cmd);
+  Serial.print(compact_cmd);
   Serial.print("|");
-  Serial.println(detail);
+  Serial.println(compact_detail);
 }
 
 void sendErr(const char* code, const char* message) {

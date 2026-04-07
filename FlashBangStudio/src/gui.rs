@@ -3371,10 +3371,11 @@ impl FlashBangGuiApp {
         max_lines: usize,
     ) -> Result<(Vec<String>, Vec<String>), String> {
         const MAX_IDLE_TIMEOUTS: usize = 3;
-        let is_hello = command == "HELLO";
+        let wire_command = Self::compact_protocol_command(command);
+        let is_hello = command == "HELLO" || wire_command == "H";
         let started = Instant::now();
 
-        let tx_line = format!("{command}\n");
+        let tx_line = format!("{wire_command}\n");
         handle
             .write_all(tx_line.as_bytes())
             .map_err(|e| format!("write failed: {e}"))?;
@@ -3426,7 +3427,7 @@ impl FlashBangGuiApp {
 
                     idle_timeouts += 1;
                     timeout_logs.push(format!(
-                        "TIMEOUT: cmd={command} idle_timeout={} elapsed={}ms",
+                        "TIMEOUT: cmd={wire_command} idle_timeout={} elapsed={}ms",
                         idle_timeouts,
                         started.elapsed().as_millis()
                     ));
@@ -3439,6 +3440,31 @@ impl FlashBangGuiApp {
         }
 
         Ok((lines, timeout_logs))
+    }
+
+    fn compact_protocol_command(command: &str) -> String {
+        if let Some(rest) = command.strip_prefix("PARAMETER|") {
+            return format!("P|{rest}");
+        }
+        if let Some(rest) = command.strip_prefix("SEQUENCE|") {
+            return format!("S|{rest}");
+        }
+        if let Some(rest) = command.strip_prefix("READ|") {
+            return format!("R|{rest}");
+        }
+        if let Some(rest) = command.strip_prefix("PROGRAM_BYTE|") {
+            return format!("W|{rest}");
+        }
+        if let Some(rest) = command.strip_prefix("SECTOR_ERASE|") {
+            return format!("E|{rest}");
+        }
+        if command == "CHIP_ERASE" {
+            return "C".to_string();
+        }
+        if let Some(rest) = command.strip_prefix("WRITE_STATUS|") {
+            return format!("T|{rest}");
+        }
+        command.to_string()
     }
 
     fn push_worker_log(
@@ -3465,10 +3491,11 @@ impl FlashBangGuiApp {
     ) -> Result<Vec<String>, String> {
         let (lines, timeout_logs) =
             Self::serial_send_and_read_lines_on_handle(handle, command, max_lines)?;
+        let wire_command = Self::compact_protocol_command(command);
         for line in timeout_logs {
             Self::push_worker_log(logs, WireDirection::Ui, line);
         }
-        Self::push_worker_log(logs, WireDirection::Tx, command);
+        Self::push_worker_log(logs, WireDirection::Tx, wire_command);
         for line in &lines {
             Self::push_worker_log(logs, WireDirection::Rx, line.as_str());
         }

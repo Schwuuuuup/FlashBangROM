@@ -72,6 +72,10 @@ bool parseLine(const String& line, CommandContext& ctx) {
     ctx.cmd = CommandType::ChipErase;
     return true;
   }
+  if (normalized == "C") {
+    ctx.cmd = CommandType::ChipErase;
+    return true;
+  }
   if (normalized == "INSPECT") {
     ctx.cmd = CommandType::Inspect;
     return true;
@@ -117,14 +121,22 @@ bool parseLine(const String& line, CommandContext& ctx) {
     ctx.cmd = CommandType::Sequence;
     return true;
   }
+  if (op == "S") {
+    ctx.cmd = CommandType::Sequence;
+    return true;
+  }
 
   if (op == "PARAMETER") {
     // PARAMETER|key|value — need raw line for case-sensitive key
     ctx.cmd = CommandType::Parameter;
     return true;
   }
+  if (op == "P") {
+    ctx.cmd = CommandType::Parameter;
+    return true;
+  }
 
-  if (op == "READ") {
+  if (op == "READ" || op == "R") {
     int p2 = normalized.indexOf('|', p1 + 1);
     if (p2 < 0) {
       return false;
@@ -141,7 +153,7 @@ bool parseLine(const String& line, CommandContext& ctx) {
     return true;
   }
 
-  if (op == "PROGRAM_BYTE") {
+  if (op == "PROGRAM_BYTE" || op == "W") {
     int p2 = normalized.indexOf('|', p1 + 1);
     uint32_t value = 0;
     if (p2 < 0) {
@@ -160,7 +172,7 @@ bool parseLine(const String& line, CommandContext& ctx) {
     return true;
   }
 
-  if (op == "SECTOR_ERASE") {
+  if (op == "SECTOR_ERASE" || op == "E") {
     String addrText = normalized.substring(p1 + 1);
     if (!parseHex32(addrText, ctx.addr)) {
       return false;
@@ -169,7 +181,7 @@ bool parseLine(const String& line, CommandContext& ctx) {
     return true;
   }
 
-  if (op == "WRITE_STATUS") {
+  if (op == "WRITE_STATUS" || op == "T") {
     int p2 = normalized.indexOf('|', p1 + 1);
     int p3 = normalized.indexOf('|', p2 + 1);
     uint32_t expected = 0;

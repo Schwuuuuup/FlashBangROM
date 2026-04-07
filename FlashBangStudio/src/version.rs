@@ -23,7 +23,7 @@ pub fn package_version() -> &'static str {
 }
 
 pub fn supported_protocol_version() -> &'static str {
-    "0.5.0"
+    "0.6.0"
 }
 
 fn parse_semver_triplet(value: &str) -> Option<(u64, u64, u64)> {
