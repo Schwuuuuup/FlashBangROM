@@ -147,7 +147,7 @@ void executeRead(uint32_t addr, uint32_t len) {
     return;
   }
 
-  static constexpr uint32_t CHUNK = 32;
+  static constexpr uint32_t CHUNK = 128;
   uint8_t buf[CHUNK];
   uint32_t offset = 0;
   while (offset < len) {

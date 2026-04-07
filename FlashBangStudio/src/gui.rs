@@ -3372,8 +3372,16 @@ impl FlashBangGuiApp {
     ) -> Result<(Vec<String>, Vec<String>), String> {
         const MAX_IDLE_TIMEOUTS: usize = 3;
         let wire_command = Self::compact_protocol_command(command);
+        let expected_ok_cmd = wire_command
+            .split('|')
+            .next()
+            .unwrap_or(wire_command.as_str())
+            .to_string();
         let is_hello = command == "HELLO" || wire_command == "H";
         let started = Instant::now();
+
+        // Drop stale frames before sending a new command so replies stay correlated.
+        let _ = handle.clear(serialport::ClearBuffer::Input);
 
         let tx_line = format!("{wire_command}\n");
         handle
@@ -3396,10 +3404,17 @@ impl FlashBangGuiApp {
                         if !line.is_empty() {
                             lines.push(line.clone());
                             if line.starts_with("OK|")
+                                && line.starts_with(&format!("OK|{expected_ok_cmd}|"))
                                 || line.starts_with("ERR|")
                                 || (is_hello && line.starts_with("HELLO|"))
                             {
                                 break;
+                            }
+                            if line.starts_with("OK|")
+                                || line.starts_with("ERR|")
+                                || (is_hello && line.starts_with("HELLO|"))
+                            {
+                                continue;
                             }
                         }
                     } else if byte[0] != b'\r' {
@@ -3417,7 +3432,8 @@ impl FlashBangGuiApp {
                     }
 
                     if lines.iter().any(|line| {
-                        line.starts_with("OK|")
+                        (line.starts_with("OK|")
+                            && line.starts_with(&format!("OK|{expected_ok_cmd}|")))
                             || line.starts_with("ERR|")
                             || (is_hello && line.starts_with("HELLO|"))
                     })
