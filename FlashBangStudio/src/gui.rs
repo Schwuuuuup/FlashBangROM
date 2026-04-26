@@ -1084,29 +1084,21 @@ impl FlashBangGuiApp {
 
         const MAX_PREVIEW_TEXTURE_SIDE: usize = 16_384;
         let data_len = self.data.work_data.len();
-        let mut width = self.preview_pixels_per_row.max(1).min(MAX_PREVIEW_TEXTURE_SIDE);
+        let width = self.preview_pixels_per_row.max(1).min(MAX_PREVIEW_TEXTURE_SIDE);
 
-        // Ensure resulting height does not exceed texture limits.
-        let min_width_for_height = data_len.max(1).div_ceil(MAX_PREVIEW_TEXTURE_SIDE);
-        width = width.max(min_width_for_height).min(MAX_PREVIEW_TEXTURE_SIDE);
-
-        // Fallback for datasets that exceed single-texture capacity.
-        let max_pixels = MAX_PREVIEW_TEXTURE_SIDE * MAX_PREVIEW_TEXTURE_SIDE;
-        let effective_len = data_len.min(max_pixels);
+        // Keep the user-selected width and truncate the preview if a single
+        // texture cannot fit the requested layout.
+        let max_pixels_for_width = width.saturating_mul(MAX_PREVIEW_TEXTURE_SIDE);
+        let effective_len = data_len.min(max_pixels_for_width);
         let height = effective_len.max(1).div_ceil(width);
-
-        if width != self.preview_pixels_per_row {
-            self.preview_pixels_per_row = width;
-            self.status = format!(
-                "Preview width angepasst auf {} (Texture-Limit {}x{}).",
-                width, MAX_PREVIEW_TEXTURE_SIDE, MAX_PREVIEW_TEXTURE_SIDE
-            );
-        }
 
         if effective_len < data_len {
             self.status = format!(
-                "Preview zeigt nur die ersten {} Byte (Texture-Limit {}x{}).",
-                effective_len, MAX_PREVIEW_TEXTURE_SIDE, MAX_PREVIEW_TEXTURE_SIDE
+                "Preview zeigt nur die ersten {} Byte bei {} Pixeln/Zeile (Texture-Limit {}x{}).",
+                effective_len,
+                width,
+                MAX_PREVIEW_TEXTURE_SIDE,
+                MAX_PREVIEW_TEXTURE_SIDE
             );
         }
 
