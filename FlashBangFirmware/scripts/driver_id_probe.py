@@ -63,6 +63,15 @@ def to_upper_hex(value: int) -> str:
     return f"{value:X}"
 
 
+def is_supported_sequence(script: str) -> bool:
+    return script.strip().upper() != "UNSUPPORTED"
+
+
+def ms_to_us_hex(ms: int) -> str:
+    us = min(int(ms) * 1000, 0xFFFFFFFF)
+    return f"{us:X}"
+
+
 def build_upload_lines(driver: dict) -> list[str]:
     models = driver.get("models", [])
     if not models:
@@ -86,7 +95,7 @@ def build_upload_lines(driver: dict) -> list[str]:
         if key not in seq:
             raise ValueError(f"missing sequence: {key}")
 
-    return [
+    lines = [
         f"PARAMETER|CHIP_SIZE|{to_upper_hex(size_bytes)}",
         f"PARAMETER|SECTOR_SIZE|{to_upper_hex(sector_size)}",
         f"PARAMETER|ADDR_BITS|{to_upper_hex(address_bits)}",
@@ -94,10 +103,30 @@ def build_upload_lines(driver: dict) -> list[str]:
         f"SEQUENCE|ID_READ|{seq['id_read']}",
         f"SEQUENCE|ID_EXIT|{seq['id_exit']}",
         f"SEQUENCE|PROGRAM_BYTE|{seq['program_byte']}",
-        f"SEQUENCE|PROGRAM_RANGE|{seq['program_range']}",
-        f"SEQUENCE|SECTOR_ERASE|{seq['sector_erase']}",
-        f"SEQUENCE|CHIP_ERASE|{seq['chip_erase']}",
     ]
+
+    timing = driver.get("timing") or {}
+    if "program_timeout_ms" in timing:
+        lines.append(
+            f"PARAMETER|program_timeout_us|{ms_to_us_hex(timing['program_timeout_ms'])}"
+        )
+    if "sector_erase_timeout_ms" in timing:
+        lines.append(
+            f"PARAMETER|sector_erase_timeout_us|{ms_to_us_hex(timing['sector_erase_timeout_ms'])}"
+        )
+    if "chip_erase_timeout_ms" in timing:
+        lines.append(
+            f"PARAMETER|chip_erase_timeout_us|{ms_to_us_hex(timing['chip_erase_timeout_ms'])}"
+        )
+
+    if is_supported_sequence(seq["program_range"]):
+        lines.append(f"SEQUENCE|PROGRAM_RANGE|{seq['program_range']}")
+    if is_supported_sequence(seq["sector_erase"]):
+        lines.append(f"SEQUENCE|sector_erase|{seq['sector_erase']}")
+    if is_supported_sequence(seq["chip_erase"]):
+        lines.append(f"SEQUENCE|CHIP_ERASE|{seq['chip_erase']}")
+
+    return lines
 
 
 def resolve_driver_path(arg: str) -> Path:

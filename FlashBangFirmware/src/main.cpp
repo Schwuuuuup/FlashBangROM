@@ -21,7 +21,7 @@ const char* kCommandPrefixes[] = {
   "PARAMETER|", "SEQUENCE|", "HELLO", "ID", "INSPECT", "DRIVER_RESET",
   "READ|",      "PROGRAM_BYTE|", "PROGRAM_RANGE|", "SECTOR_ERASE|", "CHIP_ERASE",
   "WRITE_STATUS|", "P|", "S|", "R|", "W|", "G|", "E|", "T|", "ADDR_BUS_TEST|", "DATA_BUS_MONITOR_START",
-  "DATA_BUS_MONITOR_STOP", "SET_A", "?"};
+  "DATA_BUS_MONITOR_STOP", "SET_A", "?", "!", ">", "<", ":", "sector_erase|"};
 
 char g_rxCurrent[RX_LINE_MAX];
 uint16_t g_rxCurrentLen = 0;
@@ -89,6 +89,22 @@ int findEarliestCommandPrefix(const String& line) {
   return best;
 }
 
+int findConcatMarker(const String& line, const char* marker) {
+  int from = 1;
+  while (from < line.length()) {
+    int idx = line.indexOf(marker, from);
+    if (idx <= 0) {
+      return -1;
+    }
+    // Do not split inside command payload fields (e.g. S|PROGRAM_RANGE|...).
+    if (line.charAt(idx - 1) != '|') {
+      return idx;
+    }
+    from = idx + 1;
+  }
+  return -1;
+}
+
 String sanitizeIncomingLine(const String& line) {
   String clean = line;
   clean.trim();
@@ -103,15 +119,15 @@ String sanitizeIncomingLine(const String& line) {
   }
 
   // Recover the first command if two commands get concatenated in one line.
-  int concatIdx = clean.indexOf("PARAMETER|", 1);
+  int concatIdx = findConcatMarker(clean, "PARAMETER|");
   if (concatIdx > 0) {
     clean = clean.substring(0, concatIdx);
   }
-  concatIdx = clean.indexOf("SEQUENCE|", 1);
+  concatIdx = findConcatMarker(clean, "SEQUENCE|");
   if (concatIdx > 0) {
     clean = clean.substring(0, concatIdx);
   }
-  concatIdx = clean.indexOf("PROGRAM_RANGE|", 1);
+  concatIdx = findConcatMarker(clean, "PROGRAM_RANGE|");
   if (concatIdx > 0) {
     clean = clean.substring(0, concatIdx);
   }

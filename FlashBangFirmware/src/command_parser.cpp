@@ -41,6 +41,166 @@ bool parseLine(const String& line, CommandContext& ctx) {
   // Save raw line for commands that need case-sensitive input
   g_rawLine = trimmed;
 
+  // Special-char shorthand mode (0x20..0x3F subset used here).
+  if (trimmed == "!") {
+    ctx.cmd = CommandType::Flush;
+    ctx.shortForm = true;
+    return true;
+  }
+  if (trimmed.length() >= 1 && trimmed.charAt(0) == '>') {
+    // >AAAAADD  (5 hex addr + 2 hex data)
+    if (trimmed.length() != 8) {
+      return false;
+    }
+    uint32_t value = 0;
+    if (!parseHex32(trimmed.substring(1, 6), ctx.addr)) {
+      return false;
+    }
+    if (!parseHex32(trimmed.substring(6, 8), value)) {
+      return false;
+    }
+    ctx.value = static_cast<uint8_t>(value & 0xFF);
+    ctx.cmd = CommandType::ProgramByte;
+    ctx.shortForm = true;
+    return true;
+  }
+  if (trimmed.length() >= 1 && trimmed.charAt(0) == '<') {
+    // <AAAAALLLL (5 hex addr + 4 hex len)
+    if (trimmed.length() != 10) {
+      return false;
+    }
+    if (!parseHex32(trimmed.substring(1, 6), ctx.addr)) {
+      return false;
+    }
+    if (!parseHex32(trimmed.substring(6, 10), ctx.len)) {
+      return false;
+    }
+    if (ctx.len == 0) {
+      return false;
+    }
+    ctx.cmd = CommandType::Read;
+    ctx.shortForm = true;
+    return true;
+  }
+  if (trimmed.length() >= 1 && trimmed.charAt(0) == ':') {
+    // :AAAAALLLL<hex-bytes> (5 hex addr + 4 hex payload length in bytes + payload)
+    if (trimmed.length() < 10) {
+      return false;
+    }
+    if (!parseHex32(trimmed.substring(1, 6), ctx.addr)) {
+      return false;
+    }
+    if (!parseHex32(trimmed.substring(6, 10), ctx.len)) {
+      return false;
+    }
+    if (ctx.len == 0) {
+      return false;
+    }
+    const uint32_t payloadHexLen = ctx.len * 2UL;
+    if (trimmed.length() != static_cast<int>(10UL + payloadHexLen)) {
+      return false;
+    }
+    ctx.cmd = CommandType::ProgramRange;
+    ctx.shortForm = true;
+    return true;
+  }
+
+  // Fast path for compact aliases: <alias>|...
+  if (trimmed.length() >= 2 && trimmed.charAt(1) == '|') {
+    char alias = trimmed.charAt(0);
+    if (alias >= 'a' && alias <= 'z') {
+      alias = static_cast<char>(alias - ('a' - 'A'));
+    }
+
+    if (alias == 'S') {
+      ctx.cmd = CommandType::Sequence;
+      return true;
+    }
+    if (alias == 'P') {
+      ctx.cmd = CommandType::Parameter;
+      return true;
+    }
+
+    int p2 = trimmed.indexOf('|', 2);
+    if (alias == 'R') {
+      if (p2 < 0) {
+        return false;
+      }
+      String addrText = trimmed.substring(2, p2);
+      String lenText = trimmed.substring(p2 + 1);
+      if (!parseHex32(addrText, ctx.addr)) {
+        return false;
+      }
+      if (!parseDec32(lenText, ctx.len)) {
+        return false;
+      }
+      ctx.cmd = CommandType::Read;
+      return true;
+    }
+
+    if (alias == 'W') {
+      uint32_t value = 0;
+      if (p2 < 0) {
+        return false;
+      }
+      String addrText = trimmed.substring(2, p2);
+      String valueText = trimmed.substring(p2 + 1);
+      if (!parseHex32(addrText, ctx.addr)) {
+        return false;
+      }
+      if (!parseHex32(valueText, value)) {
+        return false;
+      }
+      ctx.value = static_cast<uint8_t>(value & 0xFF);
+      ctx.cmd = CommandType::ProgramByte;
+      return true;
+    }
+
+    if (alias == 'G') {
+      if (p2 < 0) {
+        return false;
+      }
+      String addrText = trimmed.substring(2, p2);
+      if (!parseHex32(addrText, ctx.addr)) {
+        return false;
+      }
+      ctx.cmd = CommandType::ProgramRange;
+      return true;
+    }
+
+    if (alias == 'E') {
+      String addrText = trimmed.substring(2);
+      if (!parseHex32(addrText, ctx.addr)) {
+        return false;
+      }
+      ctx.cmd = CommandType::SectorErase;
+      return true;
+    }
+
+    if (alias == 'T') {
+      int p3 = (p2 >= 0) ? trimmed.indexOf('|', p2 + 1) : -1;
+      uint32_t expected = 0;
+      if (p2 < 0 || p3 < 0) {
+        return false;
+      }
+      String addrText = trimmed.substring(2, p2);
+      String expectedText = trimmed.substring(p2 + 1, p3);
+      String timeoutText = trimmed.substring(p3 + 1);
+      if (!parseHex32(addrText, ctx.addr)) {
+        return false;
+      }
+      if (!parseHex32(expectedText, expected)) {
+        return false;
+      }
+      if (!parseDec32(timeoutText, ctx.timeoutMs)) {
+        return false;
+      }
+      ctx.value = static_cast<uint8_t>(expected & 0xFF);
+      ctx.cmd = CommandType::WriteStatus;
+      return true;
+    }
+  }
+
   // Lowercase first char → custom sequence dispatch (bit 5 check)
   char first = trimmed.charAt(0);
   if (first >= 'a' && first <= 'z') {

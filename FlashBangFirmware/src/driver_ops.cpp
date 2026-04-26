@@ -132,7 +132,11 @@ bool driverSectorErase(uint32_t addr) {
   if (sectorBase >= g_chipSizeBytes) {
     return false;
   }
-  SeqResult r = executeNamedSequence(g_driverSlot, "SECTOR_ERASE", sectorBase, 0);
+  SeqResult r = executeNamedSequence(g_driverSlot, "sector_erase", sectorBase, 0xFF);
+  if (!r.ok) {
+    // Legacy fallback for older uploaded drivers.
+    r = executeNamedSequence(g_driverSlot, "SECTOR_ERASE", sectorBase, 0);
+  }
   return r.ok;
 }
 
@@ -141,7 +145,7 @@ bool driverChipErase() {
   return r.ok;
 }
 
-void executeRead(uint32_t addr, uint32_t len) {
+void executeRead(uint32_t addr, uint32_t len, bool sendAck) {
   if (!validateRange(addr, len)) {
     sendErr("E_RANGE", "read range out of bounds");
     return;
@@ -158,5 +162,7 @@ void executeRead(uint32_t addr, uint32_t len) {
     sendDataFrameHex(addr + offset, buf, n);
     offset += n;
   }
-  sendOk("READ", "done");
+  if (sendAck) {
+    sendOk("READ", "done");
+  }
 }

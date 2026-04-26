@@ -1,5 +1,6 @@
 #include "command_executor.h"
 
+#include <cstdlib>
 #include <cstring>
 
 #include "chip_probe.h"
@@ -13,6 +14,31 @@
 #include "version_info.h"
 
 namespace {
+static constexpr uint8_t SHORT_ERR_RING_MAX = 8;
+String g_shortErrRing[SHORT_ERR_RING_MAX];
+uint8_t g_shortErrCount = 0;
+uint32_t g_shortWriteOkCount = 0;
+uint32_t g_shortReadOkCount = 0;
+
+void pushShortError(const String& line) {
+  if (g_shortErrCount < SHORT_ERR_RING_MAX) {
+    g_shortErrRing[g_shortErrCount++] = line;
+    return;
+  }
+  for (uint8_t i = 1; i < SHORT_ERR_RING_MAX; ++i) {
+    g_shortErrRing[i - 1] = g_shortErrRing[i];
+  }
+  g_shortErrRing[SHORT_ERR_RING_MAX - 1] = line;
+}
+
+void reportError(const char* code, const char* message, bool shortForm) {
+  if (shortForm) {
+    pushShortError(String("ERR|") + code + "|" + message);
+    return;
+  }
+  sendErr(code, message);
+}
+
 bool decodeHexNibble(char c, uint8_t& out) {
   if (c >= '0' && c <= '9') {
     out = static_cast<uint8_t>(c - '0');
@@ -69,7 +95,6 @@ bool isBuiltinSequenceUpper(const String& name) {
          name == "ID_EXIT" ||
          name == "PROGRAM_BYTE" ||
          name == "PROGRAM_RANGE" ||
-         name == "SECTOR_ERASE" ||
          name == "CHIP_ERASE";
 }
 
@@ -79,7 +104,6 @@ bool isBuiltinSequenceLowerLegacy(const String& name) {
          name == "id_exit" ||
          name == "program_byte" ||
          name == "program_range" ||
-         name == "sector_erase" ||
          name == "chip_erase";
 }
 
@@ -124,6 +148,21 @@ bool isCustomParameterName(const String& key) {
       return false;
     }
   }
+  return true;
+}
+
+bool parseHexArg(const String& text, uint32_t& out) {
+  String normalized = text;
+  normalized.trim();
+  if (normalized.length() == 0) {
+    return false;
+  }
+  char* endPtr = nullptr;
+  unsigned long parsed = strtoul(normalized.c_str(), &endPtr, 16);
+  if (endPtr == nullptr || *endPtr != '\0') {
+    return false;
+  }
+  out = static_cast<uint32_t>(parsed);
   return true;
 }
 
@@ -192,7 +231,27 @@ void executeCommand(const CommandContext& ctx) {
       Serial.println("# DATA_BUS_MONITOR_STOP                      : stop live data bus monitor stream");
       Serial.println("# SET_A<addr-hex5>                           : set monitor address (00000..7FFFF)");
       Serial.println("# ADDR_BUS_TEST|A0_7|A8_15|A16_18            : run address bus walk test");
+      Serial.println("# !                                          : flush shorthand errors + counters");
+      Serial.println("# >AAAAADD                                   : shorthand write byte");
+      Serial.println("# <AAAAALLLL                                 : shorthand read range");
+      Serial.println("# :AAAAALLLL<hex-bytes>                      : shorthand write range");
       break;
+
+    case CommandType::Flush: {
+      for (uint8_t i = 0; i < g_shortErrCount; ++i) {
+        Serial.println(g_shortErrRing[i]);
+      }
+      const uint32_t errCount = g_shortErrCount;
+      g_shortErrCount = 0;
+
+      String detail = String("w=") + String(g_shortWriteOkCount) +
+                      ",r=" + String(g_shortReadOkCount) +
+                      ",e=" + String(errCount);
+      sendOk("!", detail);
+      g_shortWriteOkCount = 0;
+      g_shortReadOkCount = 0;
+      break;
+    }
 
     case CommandType::Hello:
       Serial.print("HELLO|");
@@ -211,7 +270,10 @@ void executeCommand(const CommandContext& ctx) {
     }
 
     case CommandType::Read:
-      executeRead(ctx.addr, ctx.len);
+      executeRead(ctx.addr, ctx.len, !ctx.shortForm);
+      if (ctx.shortForm) {
+        g_shortReadOkCount++;
+      }
       break;
 
     case CommandType::ProgramByte: {
@@ -219,7 +281,11 @@ void executeCommand(const CommandContext& ctx) {
       bool verifyMismatch = false;
       bool ok = driverProgramByte(ctx.addr, ctx.value, &observed, &verifyMismatch);
       if (ok) {
-        sendOk("PROGRAM_BYTE", "done");
+        if (ctx.shortForm) {
+          g_shortWriteOkCount++;
+        } else {
+          sendOk("PROGRAM_BYTE", "done");
+        }
       } else if (verifyMismatch) {
         char detail[72];
         snprintf(detail, sizeof(detail),
@@ -227,37 +293,51 @@ void executeCommand(const CommandContext& ctx) {
                  static_cast<unsigned long>(ctx.addr),
                  static_cast<unsigned>(ctx.value),
                  static_cast<unsigned>(observed));
-        sendErr("E_VERIFY", detail);
+        reportError("E_VERIFY", detail, ctx.shortForm);
       } else {
-        sendErr("E_TIMEOUT", "program timeout");
+        reportError("E_TIMEOUT", "program timeout", ctx.shortForm);
       }
       break;
     }
 
     case CommandType::ProgramRange: {
-      int p1 = g_rawLine.indexOf('|');
-      int p2 = (p1 >= 0) ? g_rawLine.indexOf('|', p1 + 1) : -1;
-      if (p1 < 0 || p2 < 0) {
-        sendErr("E_PARSE", "program range malformed");
-        break;
+      String payload;
+      if (ctx.shortForm) {
+        // :AAAAALLLL<hex-bytes>
+        if (g_rawLine.length() < 10) {
+          reportError("E_PARSE", "program range malformed", true);
+          break;
+        }
+        payload = g_rawLine.substring(10);
+      } else {
+        int p1 = g_rawLine.indexOf('|');
+        int p2 = (p1 >= 0) ? g_rawLine.indexOf('|', p1 + 1) : -1;
+        if (p1 < 0 || p2 < 0) {
+          reportError("E_PARSE", "program range malformed", false);
+          break;
+        }
+        payload = g_rawLine.substring(p2 + 1);
       }
 
-      String payload = g_rawLine.substring(p2 + 1);
       payload.trim();
       if (payload.length() == 0 || (payload.length() % 2) != 0) {
-        sendErr("E_PARAM", "program range payload invalid");
+        reportError("E_PARAM", "program range payload invalid", ctx.shortForm);
         break;
       }
 
       const uint32_t byteLen = static_cast<uint32_t>(payload.length() / 2);
+      if (ctx.shortForm && ctx.len != byteLen) {
+        reportError("E_PARAM", "program range length mismatch", true);
+        break;
+      }
       if (!validateRange(ctx.addr, byteLen)) {
-        sendErr("E_RANGE", "program range out of bounds");
+        reportError("E_RANGE", "program range out of bounds", ctx.shortForm);
         break;
       }
 
       static constexpr uint32_t MAX_PROGRAM_RANGE_BYTES = 96;
       if (byteLen > MAX_PROGRAM_RANGE_BYTES) {
-        sendErr("E_PARAM", "program range payload too large");
+        reportError("E_PARAM", "program range payload too large", ctx.shortForm);
         break;
       }
 
@@ -274,14 +354,37 @@ void executeCommand(const CommandContext& ctx) {
         buf[i] = static_cast<uint8_t>((hi << 4) | lo);
       }
       if (!decodeOk) {
-        sendErr("E_PARAM", "program range payload not hex");
+        reportError("E_PARAM", "program range payload not hex", ctx.shortForm);
         break;
       }
 
       bool ok = false;
       const char* rangeScript = findSequence(g_driverSlot, "PROGRAM_RANGE");
       if (rangeScript != nullptr) {
-        ok = executeProgramRange(rangeScript, ctx.addr, buf, byteLen);
+        // Winbond-style page programming must not cross a page boundary
+        // within one program-range transaction.
+        const uint32_t pageSize = g_driverSlot.sector_size_bytes;
+        const bool pageSplitNeeded = pageSize > 0 && pageSize <= 256;
+
+        if (!pageSplitNeeded) {
+          ok = executeProgramRange(rangeScript, ctx.addr, buf, byteLen);
+        } else {
+          ok = true;
+          uint32_t offset = 0;
+          while (offset < byteLen) {
+            const uint32_t curAddr = ctx.addr + offset;
+            const uint32_t pageOffset = curAddr % pageSize;
+            const uint32_t pageRemain = pageSize - pageOffset;
+            const uint32_t chunkLen = (byteLen - offset) < pageRemain
+                                          ? (byteLen - offset)
+                                          : pageRemain;
+            if (!executeProgramRange(rangeScript, curAddr, buf + offset, chunkLen)) {
+              ok = false;
+              break;
+            }
+            offset += chunkLen;
+          }
+        }
       } else {
         ok = true;
         for (uint32_t i = 0; i < byteLen; ++i) {
@@ -295,9 +398,13 @@ void executeCommand(const CommandContext& ctx) {
       }
 
       if (ok) {
-        sendOk("PROGRAM_RANGE", "done");
+        if (ctx.shortForm) {
+          g_shortWriteOkCount++;
+        } else {
+          sendOk("PROGRAM_RANGE", "done");
+        }
       } else {
-        sendErr("E_TIMEOUT", "program range failed");
+        reportError("E_TIMEOUT", "program range failed", ctx.shortForm);
       }
       break;
     }
@@ -576,15 +683,45 @@ void executeCommand(const CommandContext& ctx) {
       break;
 
     case CommandType::CustomSequence: {
-      // g_rawLine contains the lowercase command name
-      const char* script = findSequence(g_driverSlot, g_rawLine.c_str());
+      String line = g_rawLine;
+      line.trim();
+
+      int p1 = line.indexOf('|');
+      int p2 = (p1 >= 0) ? line.indexOf('|', p1 + 1) : -1;
+      int p3 = (p2 >= 0) ? line.indexOf('|', p2 + 1) : -1;
+      if (p3 >= 0) {
+        sendErr("E_PARSE", "too many custom args");
+        break;
+      }
+
+      String name = (p1 >= 0) ? line.substring(0, p1) : line;
+      name.trim();
+
+      uint32_t seqAddr = 0;
+      uint32_t seqData = 0;
+      if (p1 >= 0) {
+        String addrText = (p2 >= 0) ? line.substring(p1 + 1, p2) : line.substring(p1 + 1);
+        if (!parseHexArg(addrText, seqAddr)) {
+          sendErr("E_PARAM", "bad custom addr");
+          break;
+        }
+      }
+      if (p2 >= 0) {
+        String dataText = line.substring(p2 + 1);
+        if (!parseHexArg(dataText, seqData)) {
+          sendErr("E_PARAM", "bad custom data");
+          break;
+        }
+      }
+
+      const char* script = findSequence(g_driverSlot, name.c_str());
       if (script == nullptr) {
         sendErr("E_SEQ", "unknown sequence");
         break;
       }
-      SeqResult r = executeSequence(script, 0, 0);
+      SeqResult r = executeSequence(script, seqAddr, static_cast<uint8_t>(seqData & 0xFF));
       if (r.ok) {
-        sendOk(g_rawLine.c_str(), "done");
+        sendOk(name.c_str(), "done");
       } else {
         sendErr("E_TIMEOUT", "sequence failed");
       }

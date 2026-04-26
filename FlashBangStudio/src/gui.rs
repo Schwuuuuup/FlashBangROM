@@ -3370,8 +3370,15 @@ impl FlashBangGuiApp {
         command: &str,
         max_lines: usize,
     ) -> Result<(Vec<String>, Vec<String>), String> {
-        const MAX_IDLE_TIMEOUTS: usize = 3;
+        const DEFAULT_IDLE_TIMEOUTS: usize = 3;
+        const PROGRAM_RANGE_IDLE_TIMEOUTS: usize = 12;
         let wire_command = Self::compact_protocol_command(command);
+        let is_short_read = wire_command.starts_with('<');
+        let max_idle_timeouts = if wire_command.starts_with(":") || wire_command.starts_with("G|") {
+            PROGRAM_RANGE_IDLE_TIMEOUTS
+        } else {
+            DEFAULT_IDLE_TIMEOUTS
+        };
         let expected_ok_cmd = wire_command
             .split('|')
             .next()
@@ -3441,13 +3448,20 @@ impl FlashBangGuiApp {
                         break;
                     }
 
+                    if is_short_read
+                        && lines.iter().any(|line| line.starts_with("DATA|"))
+                        && idle_timeouts >= 1
+                    {
+                        break;
+                    }
+
                     idle_timeouts += 1;
                     timeout_logs.push(format!(
                         "TIMEOUT: cmd={wire_command} idle_timeout={} elapsed={}ms",
                         idle_timeouts,
                         started.elapsed().as_millis()
                     ));
-                    if idle_timeouts >= MAX_IDLE_TIMEOUTS {
+                    if idle_timeouts >= max_idle_timeouts {
                         break;
                     }
                 }
@@ -3458,6 +3472,51 @@ impl FlashBangGuiApp {
         Ok((lines, timeout_logs))
     }
 
+    fn parse_read_command_for_short(command: &str) -> Option<(u32, u32)> {
+        let mut parts = command.split('|');
+        let op = parts.next()?;
+        if op != "READ" {
+            return None;
+        }
+        let addr = u32::from_str_radix(parts.next()?, 16).ok()?;
+        let len = parts.next()?.parse::<u32>().ok()?;
+        if parts.next().is_some() {
+            return None;
+        }
+        Some((addr, len))
+    }
+
+    fn parse_program_byte_for_short(command: &str) -> Option<(u32, u8)> {
+        let mut parts = command.split('|');
+        let op = parts.next()?;
+        if op != "PROGRAM_BYTE" {
+            return None;
+        }
+        let addr = u32::from_str_radix(parts.next()?, 16).ok()?;
+        let value = u8::from_str_radix(parts.next()?, 16).ok()?;
+        if parts.next().is_some() {
+            return None;
+        }
+        Some((addr, value))
+    }
+
+    fn parse_program_range_for_short(command: &str) -> Option<(u32, usize, String)> {
+        let mut parts = command.split('|');
+        let op = parts.next()?;
+        if op != "PROGRAM_RANGE" {
+            return None;
+        }
+        let addr = u32::from_str_radix(parts.next()?, 16).ok()?;
+        let payload = parts.next()?.to_string();
+        if parts.next().is_some() {
+            return None;
+        }
+        if payload.len() % 2 != 0 {
+            return None;
+        }
+        Some((addr, payload.len() / 2, payload))
+    }
+
     fn compact_protocol_command(command: &str) -> String {
         if let Some(rest) = command.strip_prefix("PARAMETER|") {
             return format!("P|{rest}");
@@ -3465,17 +3524,38 @@ impl FlashBangGuiApp {
         if let Some(rest) = command.strip_prefix("SEQUENCE|") {
             return format!("S|{rest}");
         }
-        if let Some(rest) = command.strip_prefix("READ|") {
-            return format!("R|{rest}");
+        if command.starts_with("READ|") {
+            if let Some((addr, len)) = Self::parse_read_command_for_short(command) {
+                if addr <= 0xFFFFF && len > 0 && len <= 0xFFFF {
+                    return format!("<{addr:05X}{len:04X}");
+                }
+            }
+            if let Some(rest) = command.strip_prefix("READ|") {
+                return format!("R|{rest}");
+            }
         }
-        if let Some(rest) = command.strip_prefix("PROGRAM_BYTE|") {
-            return format!("W|{rest}");
+        if command.starts_with("PROGRAM_BYTE|") {
+            if let Some((addr, value)) = Self::parse_program_byte_for_short(command) {
+                if addr <= 0xFFFFF {
+                    return format!(">{addr:05X}{value:02X}");
+                }
+            }
+            if let Some(rest) = command.strip_prefix("PROGRAM_BYTE|") {
+                return format!("W|{rest}");
+            }
         }
-        if let Some(rest) = command.strip_prefix("PROGRAM_RANGE|") {
-            return format!("G|{rest}");
+        if command.starts_with("PROGRAM_RANGE|") {
+            if let Some((addr, byte_len, payload)) = Self::parse_program_range_for_short(command) {
+                if addr <= 0xFFFFF && byte_len > 0 && byte_len <= 0xFFFF {
+                    return format!(":{addr:05X}{byte_len:04X}{payload}");
+                }
+            }
+            if let Some(rest) = command.strip_prefix("PROGRAM_RANGE|") {
+                return format!("G|{rest}");
+            }
         }
         if let Some(rest) = command.strip_prefix("SECTOR_ERASE|") {
-            return format!("E|{rest}");
+            return format!("sector_erase|{rest}");
         }
         if command == "CHIP_ERASE" {
             return "C".to_string();
@@ -3508,9 +3588,22 @@ impl FlashBangGuiApp {
         max_lines: usize,
         logs: &mut Vec<(WireDirection, String)>,
     ) -> Result<Vec<String>, String> {
+        let wire_command = Self::compact_protocol_command(command);
+        let is_short_write = wire_command.starts_with('>') || wire_command.starts_with(':');
+        let is_short_read = wire_command.starts_with('<');
+        let is_flush = wire_command == "!";
+
+        if is_short_write {
+            let tx_line = format!("{wire_command}\n");
+            handle
+                .write_all(tx_line.as_bytes())
+                .map_err(|e| format!("write failed: {e}"))?;
+            Self::push_worker_log(logs, WireDirection::Tx, wire_command);
+            return Ok(Vec::new());
+        }
+
         let (lines, timeout_logs) =
             Self::serial_send_and_read_lines_on_handle(handle, command, max_lines)?;
-        let wire_command = Self::compact_protocol_command(command);
         for line in timeout_logs {
             Self::push_worker_log(logs, WireDirection::Ui, line);
         }
@@ -3519,14 +3612,40 @@ impl FlashBangGuiApp {
             Self::push_worker_log(logs, WireDirection::Rx, line.as_str());
         }
 
+        if is_short_read {
+            if lines.iter().any(|line| line.starts_with("ERR|")) {
+                if let Some(Ok(DeviceFrame::Err { code, message })) =
+                    lines.iter().map(|line| parse_device_frame(line)).find(|f| {
+                        matches!(f, Ok(DeviceFrame::Err { .. }))
+                    })
+                {
+                    return Err(format!("{code}: {message}"));
+                }
+                return Err("read failed".to_string());
+            }
+            if lines.iter().any(|line| line.starts_with("DATA|")) {
+                return Ok(lines);
+            }
+            return Err("no DATA frame received".to_string());
+        }
+
+        let mut saw_ok = false;
         for line in &lines {
             match parse_device_frame(line) {
-                Ok(DeviceFrame::Ok { .. }) => return Ok(lines),
+                Ok(DeviceFrame::Ok { .. }) => {
+                    saw_ok = true;
+                }
                 Ok(DeviceFrame::Err { code, message }) => {
-                    return Err(format!("{code}: {message}"));
+                    if !is_flush {
+                        return Err(format!("{code}: {message}"));
+                    }
                 }
                 _ => {}
             }
+        }
+
+        if saw_ok {
+            return Ok(lines);
         }
 
         Err("no OK frame received".to_string())
@@ -3677,6 +3796,10 @@ impl FlashBangGuiApp {
         }
 
         const PROGRAM_RANGE_CHUNK: usize = 64;
+        // Slow flash operations can take much longer than serial TX of queued short frames.
+        // Flush after each short write to prevent RX overruns and malformed ':' commands.
+        const SHORT_FLUSH_INTERVAL: usize = 1;
+        let mut short_writes_since_flush = 0usize;
         let mut i = 0usize;
         while i < len {
             if ro_known[i] && ro_data[i] == work_data[i] {
@@ -3720,6 +3843,25 @@ impl FlashBangGuiApp {
                 }
             }
 
+            if Self::compact_protocol_command(&cmd).starts_with(':') {
+                short_writes_since_flush += 1;
+                if short_writes_since_flush >= SHORT_FLUSH_INTERVAL {
+                    let flush_lines = Self::send_expect_ok_on_handle(handle, "!", 16, &mut logs)
+                        .map_err(|e| (logs.clone(), e))?;
+                    let mut flush_error: Option<String> = None;
+                    for line in &flush_lines {
+                        if let Ok(DeviceFrame::Err { code, message }) = parse_device_frame(line) {
+                            flush_error = Some(format!("{code}: {message}"));
+                            break;
+                        }
+                    }
+                    if let Some(e) = flush_error {
+                        return Err((logs, e));
+                    }
+                    short_writes_since_flush = 0;
+                }
+            }
+
             flashed += payload.len();
             for idx in chunk_start..i {
                 if ro_known[idx] {
@@ -3729,6 +3871,16 @@ impl FlashBangGuiApp {
                 }
             }
             on_progress(i, len);
+        }
+
+        if short_writes_since_flush > 0 {
+            let flush_lines = Self::send_expect_ok_on_handle(handle, "!", 16, &mut logs)
+                .map_err(|e| (logs.clone(), e))?;
+            for line in &flush_lines {
+                if let Ok(DeviceFrame::Err { code, message }) = parse_device_frame(line) {
+                    return Err((logs, format!("{code}: {message}")));
+                }
+            }
         }
 
         let total = len;
@@ -3798,7 +3950,7 @@ impl FlashBangGuiApp {
         String,
     ), (Vec<(WireDirection, String)>, String)> {
         let mut logs: Vec<(WireDirection, String)> = Vec::new();
-        let cmd = format!("SECTOR_ERASE|{start:05X}");
+        let cmd = format!("sector_erase|{start:05X}");
         Self::send_expect_ok_on_handle(handle, &cmd, 6, &mut logs)
             .map_err(|e| (logs.clone(), e))?;
 

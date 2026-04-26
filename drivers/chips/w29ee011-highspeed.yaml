@@ -13,10 +13,10 @@ sequences:
   id_entry: "W5555,AA;W2AAA,55;W5555,90;D1"
   id_read: "R0000>R0;R0001>R1"
   id_exit: "W5555,AA;W2AAA,55;W5555,F0;D1"
-  program_byte: "W5555,AA;W2AAA,55;W5555,A0;W$A,$D;P$A,$D,20000;D0;W5555,F0;D0"
-  program_range: "W5555,AA;W2AAA,55;W5555,A0;{W$A,$D};P$A,$D,20000;D0;W5555,F0;D0"
-  sector_erase: "UNSUPPORTED"
-  chip_erase: "W5555,AA;W2AAA,55;W5555,80;W5555,AA;W2AAA,55;W5555,10;T0000,50000000"
+  program_byte: "W5555,AA;W2AAA,55;W5555,A0;W$A,$D;P$A,$D,$program_timeout_us;D0;W5555,F0;D0"
+  program_range: "W5555,AA;W2AAA,55;W5555,A0;{W$A,$D};P$A,$D,$program_timeout_us;D0;W5555,F0;D0"
+  sector_erase: "W5555,AA;W2AAA,55;W5555,A0;W$A,$D;P$A,$D,$sector_erase_timeout_us;D0;W5555,F0;D0"
+  chip_erase: "W5555,AA;W2AAA,55;W5555,80;W5555,AA;W2AAA,55;W5555,10;T0000,$chip_erase_timeout_us"
 
 custom_params:
 - name: PAGE_SIZE_BYTES
@@ -25,7 +25,7 @@ custom_params:
 operations:
   read: true
   program_byte: true
-  sector_erase: false
+  sector_erase: true
   chip_erase: true
   write_status: false
   chip_id: true

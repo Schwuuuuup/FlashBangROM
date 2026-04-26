@@ -13,6 +13,7 @@ enum class DeviceState {
 enum class CommandType {
   None,
   Help,
+  Flush,
   Hello,
   Id,
   Read,
@@ -39,6 +40,7 @@ struct CommandContext {
   uint8_t value = 0;
   uint32_t timeoutMs = 0;
   uint8_t bank = 0;
+  bool shortForm = false;
 };
 
 struct ChipInfo {
@@ -55,7 +57,7 @@ static constexpr uint8_t MAX_SEQUENCES = 12;
 static constexpr uint8_t MAX_SEQ_NAME = 20;
 static constexpr uint8_t MAX_SEQ_SCRIPT = 96;
 static constexpr uint8_t MAX_CUSTOM_PARAMS = 8;
-static constexpr uint8_t MAX_PARAM_NAME = 16;
+static constexpr uint8_t MAX_PARAM_NAME = 32;
 
 struct SequenceSlot {
   char name[MAX_SEQ_NAME];

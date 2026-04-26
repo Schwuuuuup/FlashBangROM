@@ -19,10 +19,10 @@ sequences:
   id_entry: "W5555,AA;W2AAA,55;W5555,90;D10"
   id_read: "R0000>R0;R0001>R1"
   id_exit: "W5555,AA;W2AAA,55;W5555,F0;D10"
-  program_byte: "W5555,AA;W2AAA,55;W5555,A0;W$A,$D;T$A,50000"
-  program_range: "{W5555,AA;W2AAA,55;W5555,A0;W$A,$D;T$A,50000}"
-  sector_erase: "W5555,AA;W2AAA,55;W5555,80;W5555,AA;W2AAA,55;W$A,30;T$A,50000000"
-  chip_erase: "W5555,AA;W2AAA,55;W5555,80;W5555,AA;W2AAA,55;W5555,10;T0000,250000000"
+  program_byte: "W5555,AA;W2AAA,55;W5555,A0;W$A,$D;T$A,$program_timeout_us"
+  program_range: "{W5555,AA;W2AAA,55;W5555,A0;W$A,$D;T$A,$program_timeout_us}"
+  sector_erase: "W5555,AA;W2AAA,55;W5555,80;W5555,AA;W2AAA,55;W$A,30;T$A,$sector_erase_timeout_us"
+  chip_erase: "W5555,AA;W2AAA,55;W5555,80;W5555,AA;W2AAA,55;W5555,10;T0000,$chip_erase_timeout_us"
 
 operations:
   read: true

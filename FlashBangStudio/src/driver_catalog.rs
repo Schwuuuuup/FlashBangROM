@@ -20,7 +20,15 @@ struct DriverFile {
     address_bits: u8,
     sector_size_bytes: u32,
     sequences: DriverSequences,
+    timing: Option<DriverTiming>,
     models: Vec<DriverModel>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+struct DriverTiming {
+    program_timeout_ms: Option<u32>,
+    sector_erase_timeout_ms: Option<u32>,
+    chip_erase_timeout_ms: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -44,6 +52,15 @@ pub struct DriverEntry {
 pub struct DriverUploadPlan {
     pub driver_id: String,
     pub upload_lines: Vec<String>,
+}
+
+fn is_supported_sequence(script: &str) -> bool {
+    !script.trim().eq_ignore_ascii_case("UNSUPPORTED")
+}
+
+fn ms_to_us_hex(ms: u32) -> String {
+    let us = (ms as u64).saturating_mul(1000).min(u32::MAX as u64) as u32;
+    format!("{us:X}")
 }
 
 fn parse_jedec(jedec_id: &str) -> Option<(u8, u8)> {
@@ -144,15 +161,33 @@ pub fn build_upload_plan(path: &Path) -> Result<DriverUploadPlan, String> {
     upload_lines.push(format!("PARAMETER|SECTOR_SIZE|{:X}", driver.sector_size_bytes));
     upload_lines.push(format!("PARAMETER|ADDR_BITS|{:X}", driver.address_bits));
 
+    if let Some(timing) = &driver.timing {
+        if let Some(ms) = timing.program_timeout_ms {
+            upload_lines.push(format!("PARAMETER|program_timeout_us|{}", ms_to_us_hex(ms)));
+        }
+        if let Some(ms) = timing.sector_erase_timeout_ms {
+            upload_lines.push(format!("PARAMETER|sector_erase_timeout_us|{}", ms_to_us_hex(ms)));
+        }
+        if let Some(ms) = timing.chip_erase_timeout_ms {
+            upload_lines.push(format!("PARAMETER|chip_erase_timeout_us|{}", ms_to_us_hex(ms)));
+        }
+    }
+
     upload_lines.push(format!("SEQUENCE|ID_ENTRY|{}", driver.sequences.id_entry));
     upload_lines.push(format!("SEQUENCE|ID_READ|{}", driver.sequences.id_read));
     upload_lines.push(format!("SEQUENCE|ID_EXIT|{}", driver.sequences.id_exit));
     upload_lines.push(format!("SEQUENCE|PROGRAM_BYTE|{}", driver.sequences.program_byte));
     if let Some(program_range) = driver.sequences.program_range {
-        upload_lines.push(format!("SEQUENCE|PROGRAM_RANGE|{}", program_range));
+        if is_supported_sequence(&program_range) {
+            upload_lines.push(format!("SEQUENCE|PROGRAM_RANGE|{}", program_range));
+        }
     }
-    upload_lines.push(format!("SEQUENCE|SECTOR_ERASE|{}", driver.sequences.sector_erase));
-    upload_lines.push(format!("SEQUENCE|CHIP_ERASE|{}", driver.sequences.chip_erase));
+    if is_supported_sequence(&driver.sequences.sector_erase) {
+        upload_lines.push(format!("SEQUENCE|sector_erase|{}", driver.sequences.sector_erase));
+    }
+    if is_supported_sequence(&driver.sequences.chip_erase) {
+        upload_lines.push(format!("SEQUENCE|CHIP_ERASE|{}", driver.sequences.chip_erase));
+    }
 
     Ok(DriverUploadPlan {
         driver_id: driver.id,

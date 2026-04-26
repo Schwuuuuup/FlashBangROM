@@ -10,13 +10,16 @@
 
 namespace {
 
+bool isTokenTerminator(char c) {
+  return c == '\0' || c == ',' || c == ';' || c == '>' || c == '}';
+}
+
 // Parse a hex value from string, advancing pos. Stops at comma, semicolon,
 // '>', '}', or end of string. Returns parsed value via out.
 bool parseHexToken(const char* script, uint16_t& pos, uint32_t& out) {
   uint32_t val = 0;
   bool hasDigit = false;
-  while (script[pos] != '\0' && script[pos] != ',' && script[pos] != ';' &&
-         script[pos] != '>' && script[pos] != '}') {
+  while (!isTokenTerminator(script[pos])) {
     char c = script[pos];
     uint8_t d;
     if (c >= '0' && c <= '9') d = c - '0';
@@ -36,8 +39,7 @@ bool parseHexToken(const char* script, uint16_t& pos, uint32_t& out) {
 bool parseDecToken(const char* script, uint16_t& pos, uint32_t& out) {
   uint32_t val = 0;
   bool hasDigit = false;
-  while (script[pos] != '\0' && script[pos] != ',' && script[pos] != ';' &&
-         script[pos] != '>' && script[pos] != '}') {
+  while (!isTokenTerminator(script[pos])) {
     char c = script[pos];
     if (c < '0' || c > '9') return false;
     val = val * 10 + (c - '0');
@@ -46,6 +48,38 @@ bool parseDecToken(const char* script, uint16_t& pos, uint32_t& out) {
   }
   out = val;
   return hasDigit;
+}
+
+bool resolveCustomParamByName(const char* script, uint16_t& pos, uint32_t& out) {
+  if (script[pos] < 'a' || script[pos] > 'z') {
+    return false;
+  }
+
+  char name[MAX_PARAM_NAME];
+  uint8_t n = 0;
+  while (!isTokenTerminator(script[pos])) {
+    char c = script[pos];
+    bool ok = (c >= 'a' && c <= 'z') ||
+              (c >= '0' && c <= '9') ||
+              c == '_';
+    if (!ok) {
+      return false;
+    }
+    if (n >= (MAX_PARAM_NAME - 1)) {
+      return false;
+    }
+    name[n++] = c;
+    pos++;
+  }
+  name[n] = '\0';
+
+  for (uint8_t i = 0; i < g_driverSlot.custom_param_count; ++i) {
+    if (strcmp(g_driverSlot.custom_params[i].name, name) == 0) {
+      out = g_driverSlot.custom_params[i].value;
+      return true;
+    }
+  }
+  return false;
 }
 
 // Resolve a value token which may be a hex literal or a variable ($A, $D, $R0, $R1, $0..$7).
@@ -82,9 +116,20 @@ bool resolveValue(const char* script, uint16_t& pos, uint32_t& out,
       pos++;
       return true;
     }
+    if (resolveCustomParamByName(script, pos, out)) {
+      return true;
+    }
     return false;
   }
   return parseHexToken(script, pos, out);
+}
+
+bool resolveDecOrVar(const char* script, uint16_t& pos, uint32_t& out,
+                     uint32_t addr, uint8_t data, uint8_t r0, uint8_t r1) {
+  if (script[pos] == '$') {
+    return resolveValue(script, pos, out, addr, data, r0, r1);
+  }
+  return parseDecToken(script, pos, out);
 }
 
 // Execute a single semicolon-delimited segment of micro-script.
@@ -132,7 +177,7 @@ bool executeSegment(const char* script, uint16_t& pos,
     // Delay: Dvalue (decimal microseconds)
     pos++;
     uint32_t us = 0;
-    if (!parseDecToken(script, pos, us)) return false;
+    if (!resolveDecOrVar(script, pos, us, addr, data, r0, r1)) return false;
     delayMicroseconds(us);
     return true;
   }
@@ -145,7 +190,7 @@ bool executeSegment(const char* script, uint16_t& pos,
     if (script[pos] != ',') return false;
     pos++;
     uint32_t timeout = 0;
-    if (!parseDecToken(script, pos, timeout)) return false;
+    if (!resolveDecOrVar(script, pos, timeout, addr, data, r0, r1)) return false;
     return waitToggleDone(pAddr, timeout);
   }
 
@@ -161,7 +206,7 @@ bool executeSegment(const char* script, uint16_t& pos,
     if (script[pos] != ',') return false;
     pos++;
     uint32_t timeout = 0;
-    if (!parseDecToken(script, pos, timeout)) return false;
+    if (!resolveDecOrVar(script, pos, timeout, addr, data, r0, r1)) return false;
     return waitDq7DoneProgram(pAddr, static_cast<uint8_t>(expected), timeout);
   }
 
