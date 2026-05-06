@@ -43,3 +43,4 @@ __pycache__/
 #Test-Data
 captures/
 FlashBangStudio/Cargo.lock
+*.code-workspace
