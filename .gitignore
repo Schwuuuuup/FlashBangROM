@@ -44,3 +44,7 @@ __pycache__/
 captures/
 FlashBangStudio/Cargo.lock
 *.code-workspace
+*.dblite
+*.elf
+*.uf2
+*.cpp.o
