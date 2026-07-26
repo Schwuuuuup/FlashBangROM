@@ -49,7 +49,7 @@ static void uploadSink(uint32_t index, uint8_t value) {
 
 static void printHelp() {
   Serial.println(F("FlashBangRP2350B - SST39SF040 programmer"));
-  Serial.println(F("Numbers accept 0x hex or decimal. Addresses are byte addresses."));
+  Serial.println(F("Numbers accept $hex, 0x hex or decimal. Addresses are byte addresses."));
   Serial.println();
   Serial.println(F("  help                        show this help"));
   Serial.println(F("  id                          read manufacturer/device ID"));
@@ -66,13 +66,22 @@ static void printHelp() {
   Serial.println(F("      each written byte is read back and mismatches are reported."));
 }
 
-// Parse a numeric token (hex with 0x, or decimal). Returns false on garbage.
+// Parse a numeric token. Accepts $hex, 0xhex or decimal. Returns false on
+// garbage.
 static bool parseNum(const char* tok, uint32_t* out) {
   if (!tok || !*tok) {
     return false;
   }
+  int base = 0;  // 0 = auto-detect (0x hex / decimal)
+  if (*tok == '$') {
+    ++tok;  // '$' introduces a hex value
+    base = 16;
+    if (!*tok) {
+      return false;
+    }
+  }
   char* end = nullptr;
-  unsigned long v = strtoul(tok, &end, 0);
+  unsigned long v = strtoul(tok, &end, base);
   if (end == tok || *end != '\0') {
     return false;
   }
