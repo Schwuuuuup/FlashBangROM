@@ -30,15 +30,28 @@ uint8_t readByte(uint32_t addr);
 // Read a contiguous range into buf. buf must hold at least len bytes.
 void readRange(uint32_t addr, uint8_t* buf, uint32_t len);
 
+// Set an extra settle delay (microseconds) applied after every WE#-controlled
+// write cycle (program, erase, ID, reset). 0 disables it (default). Useful
+// for chips/boards that need more margin than the SST39SF040 default timing.
+void setWriteDelayUs(uint32_t us);
+
+// Current extra write delay in microseconds (see setWriteDelayUs()).
+uint32_t writeDelayUs();
+
+// Wait until DQ6 no longer toggles. Use this before starting a new write
+// sequence when a previous program/erase operation may still be active.
+bool waitReady(uint32_t addr);
+
 // Program a single byte. The target cell must already be erased (0xFF).
-// Returns true when the toggle-bit poll confirms completion.
+// Waits for an idle chip first and returns true when programming completes.
 bool programByte(uint32_t addr, uint8_t data);
 
 // Program a range from buf. Bytes equal to 0xFF are skipped (no-op on an
 // erased cell). Returns the number of bytes that failed to program.
 uint32_t programRange(uint32_t addr, const uint8_t* buf, uint32_t len);
 
-// Erase the 4 KByte sector that contains addr. Returns true on success.
+// Erase the 4 KByte sector that contains addr. Returns true only after the
+// complete sector has been read back as 0xFF.
 bool eraseSector(uint32_t addr);
 
 // Erase the whole chip (all bytes -> 0xFF). Returns true on success.

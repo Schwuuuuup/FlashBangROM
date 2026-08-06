@@ -24,6 +24,12 @@ inline void busDelay() {
   }
 }
 
+// Optional extra settle delay applied after every WE#-controlled write
+// cycle, on top of the fixed TWPH/hold delay. 0 (default) adds nothing.
+// Useful for chips/boards that need more margin than the SST39SF040 this
+// driver was tuned for (see setWriteDelayUs()).
+uint32_t g_writeDelayUs = 0;
+
 // End-of-write timeouts (safety net; see protocol doc section 8.3).
 static const uint32_t kTimeoutProgramUs = 50UL;         // 5x TBP_max
 static const uint32_t kTimeoutSectorEraseUs = 50000UL;  // 2x TSE_max
@@ -78,6 +84,7 @@ uint8_t busRead(uint32_t addr) {
 // One WE#-controlled bus write cycle.
 void busWrite(uint32_t addr, uint8_t data) {
   gpio_put(kPinOE, 1);  // disable chip output before driving the bus
+  busDelay();           // wait TOHZ before the MCU drives the data bus
   setDataOutput();
   setAddress(addr);
   writeDataBus(data);
@@ -87,6 +94,9 @@ void busWrite(uint32_t addr, uint8_t data) {
   gpio_put(kPinWE, 1);  // latch data -> internal op may start
   busDelay();           // TWPH / hold
   setDataInput();       // release the bus again
+  if (g_writeDelayUs) {
+    delayMicroseconds(g_writeDelayUs);
+  }
 }
 
 // Toggle-bit (DQ6) end-of-write polling with a timeout safety net.
@@ -113,6 +123,12 @@ inline void unlock() {
   busWrite(0x5555, 0xAA);
   busWrite(0x2AAA, 0x55);
 }
+
+// Defensive software reset (1-cycle F0, see protocol doc section 5.6).
+// Forces the chip back to normal read mode regardless of whatever state the
+// SDP state machine may be in, so every command sequence starts clean
+// instead of relying on a prior command to have left the chip in sync.
+inline void resetToRead() { busWrite(0x0000, 0xF0); }
 
 }  // namespace
 
@@ -147,6 +163,25 @@ void begin() {
   gpio_set_dir(kPinOE, GPIO_OUT);
   gpio_set_dir(kPinWE, GPIO_OUT);
 
+  // Hand-wired bus (long leads, no PCB trace tuning): use max drive strength
+  // and the fastest slew rate on every driven pad so address/data/control
+  // transitions settle well within the SST39 setup/hold minimums instead of
+  // relying on the RP2350 default (weaker) pad configuration.
+  for (uint8_t i = 0; i < 19; ++i) {
+    gpio_set_drive_strength(kAddrGpio[i], GPIO_DRIVE_STRENGTH_12MA);
+    gpio_set_slew_rate(kAddrGpio[i], GPIO_SLEW_RATE_FAST);
+  }
+  for (uint8_t i = 0; i < 8; ++i) {
+    gpio_set_drive_strength(kDataGpio[i], GPIO_DRIVE_STRENGTH_12MA);
+    gpio_set_slew_rate(kDataGpio[i], GPIO_SLEW_RATE_FAST);
+  }
+  gpio_set_drive_strength(kPinCE, GPIO_DRIVE_STRENGTH_12MA);
+  gpio_set_drive_strength(kPinOE, GPIO_DRIVE_STRENGTH_12MA);
+  gpio_set_drive_strength(kPinWE, GPIO_DRIVE_STRENGTH_12MA);
+  gpio_set_slew_rate(kPinCE, GPIO_SLEW_RATE_FAST);
+  gpio_set_slew_rate(kPinOE, GPIO_SLEW_RATE_FAST);
+  gpio_set_slew_rate(kPinWE, GPIO_SLEW_RATE_FAST);
+
   // Idle: control lines inactive, then keep CE# permanently LOW as the
   // protocol doc recommends (WE#-controlled cycles).
   gpio_put(kPinWE, 1);
@@ -166,7 +201,19 @@ void readRange(uint32_t addr, uint8_t* buf, uint32_t len) {
   }
 }
 
+void setWriteDelayUs(uint32_t us) { g_writeDelayUs = us; }
+
+uint32_t writeDelayUs() { return g_writeDelayUs; }
+
+bool waitReady(uint32_t addr) {
+  return waitToggle(addr, kTimeoutChipEraseUs);
+}
+
 bool programByte(uint32_t addr, uint8_t data) {
+  if (!waitReady(addr)) {
+    return false;
+  }
+  resetToRead();
   unlock();
   busWrite(0x5555, 0xA0);  // byte program command
   busWrite(addr, data);
@@ -186,16 +233,43 @@ uint32_t programRange(uint32_t addr, const uint8_t* buf, uint32_t len) {
   return failures;
 }
 
+// Read back a range and confirm it is all 0xFF, tolerating the brief
+// transient invalid readback right at the toggle-stop instant (protocol doc
+// section 6.1: DQ6..DQ0 can still be invalid for a short time after the
+// toggle bit stops). A single retry pass after a short settle delay avoids
+// mistaking that transient for a real erase failure.
+bool verifyErasedRange(uint32_t addr, uint32_t len) {
+  for (uint8_t attempt = 0; attempt < 2; ++attempt) {
+    bool allErased = true;
+    for (uint32_t i = 0; i < len; ++i) {
+      if (busRead(addr + i) != 0xFF) {
+        allErased = false;
+        break;
+      }
+    }
+    if (allErased) {
+      return true;
+    }
+    delayMicroseconds(50);
+  }
+  return false;
+}
+
 bool eraseSector(uint32_t addr) {
   uint32_t sectorBase = addr & ~(kSectorSize - 1);
+  resetToRead();
   unlock();
   busWrite(0x5555, 0x80);  // erase setup
   unlock();
   busWrite(sectorBase, 0x30);  // sector erase
-  return waitToggle(sectorBase, kTimeoutSectorEraseUs);
+  if (!waitToggle(sectorBase, kTimeoutSectorEraseUs)) {
+    return false;
+  }
+  return verifyErasedRange(sectorBase, kSectorSize);
 }
 
 bool eraseChip() {
+  resetToRead();
   unlock();
   busWrite(0x5555, 0x80);  // erase setup
   unlock();
@@ -204,6 +278,7 @@ bool eraseChip() {
 }
 
 void readId(uint8_t* manufacturer, uint8_t* device) {
+  resetToRead();
   unlock();
   busWrite(0x5555, 0x90);  // software ID entry
   delayMicroseconds(1);    // TIDA

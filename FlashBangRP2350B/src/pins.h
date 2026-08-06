@@ -33,6 +33,9 @@ static const uint8_t kAddrGpio[19] = {
 };
 
 // Data lines D0..D7 -> RP2350B GPIO number. Index == data bit.
+// NOTE: Docs/PinConnections.md lists D0/D2 swapped relative to this. The
+// mapping below was confirmed correct by physical continuity measurement;
+// the doc has the error, not this file.
 static const uint8_t kDataGpio[8] = {
     7,   // D0
     9,   // D1

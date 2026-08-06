@@ -25,6 +25,8 @@ static uint32_t g_lineLen = 0;
 // Shared state for the streaming XMODEM callbacks.
 static uint32_t g_streamBase = 0;   // chip address of logical index 0
 static uint32_t g_uploadFails = 0;  // program/verify failures during upload
+static const uint32_t kDebugUploadMax = 4096;
+static uint8_t g_uploadBuffer[kDebugUploadMax];
 
 // -------- streaming callbacks ----------------------------------------------
 
@@ -45,6 +47,10 @@ static void uploadSink(uint32_t index, uint8_t value) {
   }
 }
 
+static void bufferedUploadSink(uint32_t index, uint8_t value) {
+  g_uploadBuffer[index] = value;
+}
+
 // -------- helpers ----------------------------------------------------------
 
 static void printHelp() {
@@ -61,6 +67,7 @@ static void printHelp() {
   Serial.println(F("  download all                XMODEM-send the whole chip"));
   Serial.println(F("  download <start> <len>      XMODEM-send a range"));
   Serial.println(F("  upload <start> <len>        XMODEM-receive and program a range"));
+  Serial.println(F("  delay [us]                  show/set extra delay after each write cycle"));
   Serial.println();
   Serial.println(F("Note: program/upload do NOT auto-erase. Erase the target first;"));
   Serial.println(F("      each written byte is read back and mismatches are reported."));
@@ -124,6 +131,48 @@ static void hexDump(uint32_t start, uint32_t len) {
     buf[n] = '\0';
     Serial.println(buf);
   }
+}
+
+static void hexDumpBuffer(uint32_t start, const uint8_t* data, uint32_t len) {
+  char line[64];
+  for (uint32_t off = 0; off < len; off += 16) {
+    uint32_t row = (len - off < 16) ? (len - off) : 16;
+    int n = snprintf(line, sizeof(line), "%06lX  ",
+                     (unsigned long)(start + off));
+    for (uint32_t i = 0; i < row; ++i) {
+      n += snprintf(line + n, sizeof(line) - n, "%02X ", data[off + i]);
+    }
+    line[n] = '\0';
+    Serial.println(line);
+  }
+}
+
+static uint32_t verifyBuffer(uint32_t start, const uint8_t* expected,
+                             uint32_t len) {
+  uint32_t mismatches = 0;
+  for (uint32_t i = 0; i < len; ++i) {
+    uint8_t actual = sst39::readByte(start + i);
+    if (actual == expected[i]) {
+      continue;
+    }
+    if (mismatches < 16) {
+      Serial.print(F("VERIFY mismatch at 0x"));
+      Serial.print(start + i, HEX);
+      Serial.print(F(": sent 0x"));
+      if (expected[i] < 0x10) Serial.print('0');
+      Serial.print(expected[i], HEX);
+      Serial.print(F(", flash 0x"));
+      if (actual < 0x10) Serial.print('0');
+      Serial.println(actual, HEX);
+    }
+    ++mismatches;
+  }
+  if (mismatches > 16) {
+    Serial.print(F("... "));
+    Serial.print(mismatches - 16);
+    Serial.println(F(" additional mismatch(es)"));
+  }
+  return mismatches;
 }
 
 // Read-back verification against a constant value.
@@ -207,6 +256,25 @@ static void cmdWrite(char* args) {
   verifyConstant(start, len, (uint8_t)val);
 }
 
+static void cmdDelay(char* args) {
+  char* t1 = strtok(args, " ");
+  if (!t1) {
+    Serial.print(F("write delay: "));
+    Serial.print(sst39::writeDelayUs());
+    Serial.println(F(" us"));
+    return;
+  }
+  uint32_t us = 0;
+  if (!parseNum(t1, &us)) {
+    Serial.println(F("ERR: usage: delay [us]"));
+    return;
+  }
+  sst39::setWriteDelayUs(us);
+  Serial.print(F("write delay set to "));
+  Serial.print(us);
+  Serial.println(F(" us"));
+}
+
 static void cmdErase(char* args) {
   char* what = strtok(args, " ");
   char* arg = strtok(nullptr, " ");
@@ -273,12 +341,41 @@ static void cmdUpload(char* args) {
   }
   g_streamBase = start;
   g_uploadFails = 0;
+  bool buffered = len <= kDebugUploadMax;
+  if (buffered) {
+    Serial.println(F("Buffered debug/verify enabled (max 4096 bytes)."));
+  } else {
+    Serial.println(F("Large upload: streaming mode, buffered debug disabled."));
+  }
+  if (!sst39::waitReady(start)) {
+    Serial.println(F("ERR: flash still toggles; write not started"));
+    return;
+  }
   Serial.println(F("Start XMODEM *send* of your file in your terminal now."));
   delay(200);
-  bool ok = xmodem::receive(len, uploadSink);
+  bool ok = xmodem::receive(len, buffered ? bufferedUploadSink : uploadSink);
   Serial.println();
   if (!ok) {
     Serial.println(F("ERR: XMODEM receive failed/aborted"));
+    return;
+  }
+  if (buffered) {
+    Serial.println(F("Received data:"));
+    hexDumpBuffer(start, g_uploadBuffer, len);
+    uint32_t programFails = sst39::programRange(start, g_uploadBuffer, len);
+    uint32_t verifyFails = verifyBuffer(start, g_uploadBuffer, len);
+    if (programFails) {
+      Serial.print(F("WARN: "));
+      Serial.print(programFails);
+      Serial.println(F(" byte program operation(s) timed out"));
+    }
+    if (verifyFails) {
+      Serial.print(F("upload done with "));
+      Serial.print(verifyFails);
+      Serial.println(F(" verify error(s) - erase the target first?"));
+    } else {
+      Serial.println(F("upload complete, buffer/flash verify OK"));
+    }
     return;
   }
   if (g_uploadFails) {
@@ -310,6 +407,8 @@ static void dispatch(char* line) {
     cmdDownload(rest ? rest : (char*)"");
   } else if (strcmp(cmd, "upload") == 0) {
     cmdUpload(rest ? rest : (char*)"");
+  } else if (strcmp(cmd, "delay") == 0) {
+    cmdDelay(rest ? rest : (char*)"");
   } else {
     Serial.print(F("ERR: unknown command '"));
     Serial.print(cmd);

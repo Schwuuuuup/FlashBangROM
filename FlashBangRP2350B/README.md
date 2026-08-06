@@ -4,11 +4,11 @@ Self-contained SST39SF040 programmer for a custom **RP2350B** board. The only
 client you need is a **serial terminal**. Binary transfers use **XMODEM-CRC**,
 which every common terminal supports (minicom, tio, PuTTY, TeraTerm, …).
 
-`download`/`upload` stream directly between the chip and the serial link (a
-128-byte block buffer), so no large RAM buffer is required. A full 512 KByte
-RAM image does **not** fit next to the Arduino-Pico USB/network stack (it
-overflows SRAM by ~11 KB), so streaming is used instead — it needs almost no
-RAM and supports `download all` over the whole chip.
+`download` and uploads larger than 4 KiB stream directly between the chip and
+the serial link. Uploads up to 4 KiB are buffered so the received bytes can be
+printed after XMODEM completes and compared directly with the programmed flash.
+A full 512 KByte RAM image does **not** fit next to the Arduino-Pico
+USB/network stack, so large transfers remain streaming.
 
 ## Hardware
 
@@ -49,13 +49,21 @@ byte addresses in the 512 KByte space.
 | `download all` | XMODEM-send the whole chip to the PC |
 | `download <start> <len>` | XMODEM-send a range to the PC |
 | `upload <start> <len>` | XMODEM-receive a file and program the range |
+| `delay [us]` | show, or set, an extra delay (microseconds) applied after every write cycle |
+
+`delay` defaults to `0` (no extra delay). Increase it for chips that need more
+margin than the SST39SF040 this driver was tuned for (e.g. a slower/different
+part sharing the same socket); the value is applied after every WE#-controlled
+write cycle (program, erase, ID, reset) until changed or the board resets.
 
 ### Important: erase before programming
 
 Flash can only clear bits (`1 → 0`). `write` and `upload` do **not** auto-erase.
 Erase the target sectors first, then program. Both commands run a verify pass
 afterwards and report any cell that did not match (a common symptom of a
-forgotten erase).
+forgotten erase). Before every byte-program sequence, the firmware also checks
+that DQ6 has stopped toggling, so a still-running erase/program operation cannot
+consume the first write commands.
 
 ## Typical workflows
 
